@@ -1,0 +1,11 @@
+# WarThunderAutoBomber 运行依赖（仅支持 Windows）
+ultralytics>=8.0.0        # YOLO 战区检测
+rapidocr_onnxruntime       # OCR 场景识别
+vgamepad                   # 虚拟 Xbox 360 手柄
+opencv-python
+numpy
+pywin32                    # Win32 窗口查找 / 截图
+mss                        # 快速屏幕捕获
+torch                      # YOLO 后端（ultralytics 会连带安装，显式声明以保证版本可用）
+requests                   # 8111 HTTP API
+pynput                     # x360_keyboard.py 全局热键（可选）
