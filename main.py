@@ -28,8 +28,31 @@ except Exception:
 if __name__ == "__main__":
     app = App()
     try:
-        while True:
-            time.sleep(0.1)
-    except KeyboardInterrupt:
-        app.log("用户中断")
-        app.stop()
+        # PyQt5 必须在 from app import App 之后再导入：app 会先加载 cv2，
+        # 两者都自带 Qt 插件，先 cv2 后 Qt 才不会撞平台插件。
+        from gui import run_gui
+    except ImportError as e:
+        app.log(f"未安装 PyQt5（{e}），以无界面模式运行（pip install PyQt5 可启用 GUI）")
+        try:
+            while True:
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            app.log("用户中断")
+            app.stop()
+    else:
+        try:
+            run_gui(app)
+        except KeyboardInterrupt:
+            pass
+        except Exception as e:
+            # GUI 崩了不能让机器人跟着停 —— 后台线程全是 daemon，
+            # 这里回退成常驻空转，机器人照常跑。
+            app.log(f"GUI 异常退出: {e}，转为无界面模式")
+            try:
+                while True:
+                    time.sleep(0.1)
+            except KeyboardInterrupt:
+                pass
+        finally:
+            app.log("用户中断")
+            app.stop()

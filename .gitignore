@@ -13,6 +13,7 @@ env/
 
 # Runtime / logs
 *.log
+*.jsonl
 *.tmp
 
 # OS / editor
@@ -21,3 +22,11 @@ Thumbs.db
 desktop.ini
 .idea/
 .vscode/
+
+# OCR bench 产物（tools/ocr_bench.py）
+tools/models/
+frames/
+
+# 一次性改代码用的临时脚本（仓库 100% CRLF，中文多行不适合用 Edit 改 app.py，
+# 所以经常要落一个 _tmp_*.py 再删；漏删一个就别让它污染 git status）
+_tmp_*

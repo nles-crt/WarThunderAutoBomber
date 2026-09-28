@@ -6,25 +6,33 @@
 
 ## 功能
 
-- **全自动流程**：检测到战斗场景自动进入 → 追踪目标 → 切投弹视角 → 微调对准 → 投弹 →（可选）飞往敌方机场
+- **全自动流程**：机库自动加入战斗 → 追踪目标 → 开弹舱 → 切投弹视角 → 微调对准 → 投弹 →（可选）飞往敌方机场
 - **YOLO 战区识别**：对屏幕画面实时检测轰炸区，内置细长框目标点修正
-- **OCR 场景判断**：无需读内存，通过屏幕文字 + HUD 颜色判断当前场景并自动启停
+- **OCR 场景判断**：无需读内存，靠整屏文字的关键词表判断当前场景并自动启停
+- **自己按 UI**：认出某个界面就按那个界面该按的键 —— 进队、离开战果、关弹窗；**不该按的一个都不按**（详见「场景识别与按键」）
 - **多目标策略**：锁定最近 / 最左 / 最右战区，被队友抢时可自动切换目标
-- **可循环轰炸**：支持单次 / 双次 / 无限循环直到炸弹耗尽
+- **可循环轰炸**：支持单次 / 双次 / 无限循环
 - **精细控制**：两级投弹微调（PI + 限速），摇杆死区与灵敏度自适应衰减
+- **返航下滑道**：投弹后可飞往机场，闭环耦合高度 / 航迹角 / 空速三路，不是开环计时
 - **可选 8111 数据增强**：接入本地 `:8111` HTTP API 获取精确距离 / 机场导航（不开启则退回纯视觉方案）
+- **调参 GUI + 半透明 HUD**：`gui.py` 起一个 Qt 窗口，参数改完立即生效、无需重启；另有一个贴住游戏窗口的半透明 HUD，实时显示高度 / 速度 / 俯冲角 / 航迹 / 计划 / 目标距离
+- **F12 总开关**：随时暂停与恢复所有手柄输出
+- **三种离线日志**：逐帧场景记录、每局战果一行、未知界面去重留档
 
 ## 环境要求
 
 - Windows（依赖 vgamepad 虚拟手柄与 Win32 截图）
 - 已安装并运行 War Thunder
 - Python 3.10+
+- 游戏请用**无边框窗口模式**：独占全屏下任何置顶窗口都无法叠加，HUD 会看不见
 
 ## 安装
 
 ```bash
 pip install -r requirements.txt
 ```
+
+`PyQt5` 是可选的：不装时 `main.py` 退回无界面空转循环，机器人照常运行，只是没有调参窗口和 HUD。
 
 `models/best.pt`（YOLO 权重，约 6 MB）已随仓库提供，无需额外下载。
 
@@ -40,30 +48,36 @@ python x360_keyboard.py
 
 程序启动后：
 
-1. 打开 War Thunder 进入任意空战/陆战地图；
-2. 脚本在 OCR 检测到「战斗中」场景后自动开始追踪并投弹；
-3. `Ctrl+C` 或关闭进程会自动清理虚拟手柄。
+1. 打开 War Thunder，停在机库就行；
+2. 机器人认出「大厅」后自己按 `X` 加入战斗，匹配期间**一个键都不按**（等多久见 `match_wait_warn`），进战斗后自动追踪并投弹；
+3. 想暂停 / 恢复，按 `F12`（默认，可改 `hotkey_master`）；
+4. `Ctrl+C` 停止，虚拟手柄由 `atexit` 自动释放。
 
-所有参数（灵敏度、投弹死区、瞄准偏移、转向符号、循环次数等）都放在根目录 `config.json`，直接改文件即可、无需改代码。
+所有参数都在根目录 `config.json`，直接改文件即可、无需改代码；也可以直接在 GUI 里拖 —— **GUI 改动热生效，不用重启**（少数标了「重启生效」的除外）。
 
 ## 目录结构
 
 ```
 WarThunderAutoBomber/
-├── main.py               # 入口：信号清理 + 启动 App
-├── app.py                # 核心编排：4 条线程、控制算法、自动投弹流程
+├── main.py               # 入口：信号清理 + 虚拟手柄回收
+├── app.py                # 核心编排：所有线程、控制算法、自动投弹流程
+├── gui.py                # PyQt5 调参窗口 + 游戏内半透明 HUD（不装 PyQt5 则跳过）
 ├── x360_keyboard.py      # 独立小工具：键盘 → 虚拟手柄（不属于自动轰炸流程）
-├── config.json           # 全部可调参数
+├── config.json           # 全部可调参数（每个键都有 _键名 说明文档）
 ├── common/
 │   ├── config.py         # 读取 config.json → 模块级常量
-│   ├── gamepad.py        # vgamepad 封装：按钮 / 摇杆 / 扳机
+│   ├── gamepad.py        # vgamepad 封装：按钮 / 摇杆 / 扳机 + F12 总闸门
 │   ├── window.py         # Win32 找窗口 + MSS 截屏
 │   ├── utils.py          # map_val：像素偏差 → 摇杆值（死区/灵敏度）
-│   └── wt8111.py         # 本地 :8111 HTTP API（位置/距离/机场导航）
+│   ├── wt8111.py         # 本地 :8111 HTTP API（位置/距离/机场导航）
+│   ├── nav_law.py        # 投弹后下滑道耦合律（纯数值、无 IO，便于离线回放）
+│   └── results.py        # 战果界面文字解析（纯函数，便于离线回归）
 ├── detect/
 │   ├── yolo.py           # YOLO 检测 + 细长框目标点修正
-│   └── scene.py          # OCR 场景分类 + UI 按钮触发
+│   └── scene.py          # OCR 场景分类 + UI 按钮触发表
+├── tools/                # 离线自检（不需要游戏，见下）
 ├── models/best.pt        # YOLO 模型权重
+├── logs/                 # 运行时产生的日志（已 gitignore）
 ├── wt_controls/          # War Thunder 手柄键位配置文件（供手动参考/导入）
 └── requirements.txt
 ```
@@ -71,20 +85,73 @@ WarThunderAutoBomber/
 ## 工作流程
 
 ```
-main.py → App → 4 条后台线程
-  ├─ state_monitor_loop: OCR 场景识别（每 10s）→ 自动启停 / 开关舱门 / 按 UI 按钮
-  ├─ target_info_loop:   8111 API 数据（每 1s，可选）
-  ├─ recog_loop:         YOLO 检测（≤30 fps）
-  └─ control_loop:       误差 → 摇杆值（≤33 Hz）
-       └─ auto_bomb_sequence: 引导 → 投弹视角 → 对准 → 投弹 → 减速/返航
+main.py → App → 常驻 4 条后台线程 + 按需再起 + F12 监听
+  ├─ state_monitor_loop:  OCR 场景识别（目标周期 scene_scan_interval，默认 3s）
+  │                       → 自动启停 / 开弹舱 / 按 UI 按钮
+  ├─ target_info_loop:    8111 API 数据（每 1s）+ HUD 飞行状态采样
+  ├─ recog_loop:          YOLO 检测（≤30 fps）
+  ├─ control_loop:        误差 → 摇杆值（≤33 Hz）
+  │    └─ auto_bomb_sequence: 引导 → 投弹视角 → 对准 → 投弹 → 返航
+  ├─ navigate_to_airfield: 投弹后返航（按需线程）
+  └─ pynput keyboard.Listener: F12 总开关
 ```
+
+### 场景识别与按键
+
+整屏 OCR 拿全文，按关键词表打分（同分取表里靠前的），再过一道「连续命中才切换」的消抖。表里每条还可以挂**锚点词**：有锚点条目的场景必须命中至少一个锚点词才算数 —— 这条是拿来挡住机库载具数据卡上的 `km/h` 之类文字的（它们会让机库被误判成「战斗中」）。
+
+按键分两处：
+
+- `detect/scene.py` 的 `SCENE_BUTTONS` / `KEYWORD_BUTTONS` —— 每次扫描都按，所以只能放**重复按也安全**的键；
+- `app.py` 里各场景自己的 handler —— 有节奏的键（例如大厅 30 秒重试一次、战果界面 30 秒离开一次）走这里。
+
+几处刻意的设计，改之前值得先看一眼：
+
+- **匹配中（排队浮层）永远不按键**，只看不按。任何按键都会取消排队。
+- **购买改装件确认按 `B`**，绝不按 `X` —— 那个界面上 `X` 是「确认购买」，会花掉你的银狮。
+- **未知界面只按 `X`，且要连续 3 轮都认不出来才按**。`B` 是取消、`A` 是确认，在不认识的界面上按它们等于退掉战斗或误确认弹窗。
+- 所有「按 X 离开某个界面」共用一个 30 秒节流阀（`UI_RETRY_S`），不会每 3 秒按一次。
 
 ### 投弹流程
 
 1. **引导（guide）**：满油门，追踪目标，直到与战区距离 ≤ `bomb_view_distance`（8111）或目标框占屏幕比例 ≥ `guide_box_ratio`（视觉兜底）；
-2. **投弹视角（bomb view）**：按 `Y` 切到投弹瞄准镜，用阻尼 PI 控制器精细对准；
-3. **投弹（drop）**：十字线与目标偏差进入阈值（`pixel_deviation` / `pixel_deviation_y`）后按 `LB + X` 批量投弹；
-4. **投弹后**：退出投弹视角，油门降至 -50%，可选飞往最近的红方机场。
+2. **投弹视角（bomb view）**：开弹舱（LT + RT，每架次只拉一次）→ 按 `Y` 切到瞄准镜 → 关掉武器选择器 → 用阻尼 PI 控制器精细对准。中途丢失目标不会立刻退出视角，而是在镜内继续重新捕获（`stolen_timeout`，默认 20s）；
+3. **投弹（drop）**：十字线与目标偏差进入阈值（`pixel_deviation` / `pixel_deviation_y`）后按 `LB + X` 投弹；
+4. **投弹后**：退出投弹视角，油门降至 -50%，可选飞往机场。
+
+### 投弹后返航
+
+`fly_to_airfield` 打开后走的是**闭环下滑道耦合**（`common/nav_law.py`）：航迹角速率项做主要操纵、位置项做配平，油门是空速环而不是距离斜坡，并且拉杆权限大于推杆权限（永远留得出拉起的余量）。最后 1 km 左右是一段平飞通场，不是扎进地里。
+
+这条腿的增益是离线仿真标定的，`python tools/nav_replay.py selftest` 必须在改动前后都通过。
+
+### 三个日志
+
+都在 `logs/`，都是 JSONL，默认开启，用 `config.json` 里的开关控制：
+
+| 文件 | 内容 | 开关 |
+| --- | --- | --- |
+| `scenes_*.jsonl` | **每次扫描一行**：OCR 全文、各场景得分、被锚点拦下的场景、这一轮实际按了哪些键 | `scene_log` / `scene_log_texts` |
+| `results_*.jsonl` | **每个战果界面一行**：解析出的战果字段 + 原文 | `battle_log` |
+| `unknown_*.jsonl` | **每个没认出来的界面一行**（按文字内容去重）：原文 + 得分 + 这一轮按了什么 | `unknown_log` |
+
+`scene_log` 量大（~3 MB/小时），但它是关键词表唯一的加宽来源；后两个是精挑过的，日常看这两个就够。
+
+### 离线自检
+
+改完代码不用真飞一局，`tools/` 下有这些不需要游戏就能跑的东西：
+
+```bash
+python tools/namecheck.py app.py gui.py common/nav_law.py   # 名字/类结构（AST，快）
+python tools/namecheck.py --import app.py                   # 再 import 一遍，查结构性断裂
+python tools/nav_replay.py selftest                         # 下滑道：仿真扫参
+python tools/nav_replay.py replay logs/<run>.log             # 下滑道：真实轨迹回放
+python tools/results_check.py                               # 战果解析：拿录下来的帧回归
+python tools/scene_check.py                                 # 场景关键词表：拿录下来的帧回归
+python tools/ocr_bench.py selftest                          # OCR 提速方案离线对比台
+```
+
+**动过 `app.py` 的结构就要跑 `namecheck.py`，两种模式都要跑。**它抓的是 `py_compile` 抓不到的那类错误：一个本该是方法的 `def` 少缩进了一级，会把这个类**提前结束**，后面的方法全变成嵌套函数 —— 语法合法、名字也都在，只有飞起来才报 `AttributeError`。
 
 ## 键位说明
 
@@ -97,6 +164,7 @@ main.py → App → 4 条后台线程
 | 切换视角         | RB       |
 | 开关炸弹舱门     | LT + RT  |
 | 继续 / 确认      | A        |
+| 返回 / 取消      | B        |
 | 弹射跳伞         | 十字键上 |
 
 若与你的游戏键位不同，可把 `wt_controls/战争雷霆自动炸战区按键.blk` 导入为键位预设，或自行在游戏内调整并同步修改 `common/gamepad.py`。
@@ -104,5 +172,6 @@ main.py → App → 4 条后台线程
 ## 相关说明
 
 - 帧画面底部 40px 会在送入 YOLO 前裁剪，以减少 HUD 误检。
-- `x360_keyboard.py` 使用 `pynput` 全局热键，属于独立工具，不参与自动轰炸主流程。
-- 详细技术文档见 [CLAUDE.md](CLAUDE.md)。
+- **HUD 和调参窗口都必须避开游戏画面**：机器人是看屏幕吃饭的，它自己的窗口压在游戏上会被 OCR 读进去，把机库认成战斗中。同理，HUD 越大机器人能看到的游戏越少。
+- `x360_keyboard.py` 使用 `pynput` 全局热键，属于独立工具，不参与自动轰炸主流程；它自己会建一个 `vgamepad` 实例，别和正在跑的 `main.py` 同时开。
+- 详细技术文档（每个设计取舍的原因、实测数据、踩过的坑）见 [CLAUDE.md](CLAUDE.md)。

@@ -8,9 +8,8 @@ try:
 except ImportError:
     _REQUESTS_OK = False
 
-BASE_URL = "http://localhost:8111"
-_TIMEOUT = 2.0
-
+BASE_URL = "http://127.0.0.1:8111"
+_TIMEOUT = 3.0
 
 def fetch_json(endpoint):
     """获取 8111 端点 JSON 数据，失败返回 None"""
@@ -124,6 +123,62 @@ def get_player_altitude():
 def dump_state():
     """获取 /state 全部字段（调试用），失败返回 None"""
     return fetch_json("/state")
+
+
+# /state 的表速字段候选键名。不同游戏版本可能是 "IAS, km/h" 或 "IAS, km\\h"，
+# 所以按顺序取第一个存在的，不写死单一键名。
+_IAS_KEYS = ("IAS, km/h", "IAS, km\\h")
+_TAS_KEYS = ("TAS, km/h", "TAS, km\\h")
+_ALT_KEY = "H, m"
+
+_state_keys_logged = False
+
+
+def get_state_field(name, default=None):
+    """读取 /state 中任意字段，失败返回 default"""
+    state = fetch_json("/state")
+    if not state or not state.get("valid"):
+        return default
+    return state.get(name, default)
+
+
+def get_flight_state():
+    """一次 /state 请求取出 HUD 需要的飞行数据（避免每帧发三次 HTTP）。
+
+    返回 {alt, ias, tas, raw} 或 None（离线 / 未进入战斗）。
+
+    注意：/state 里**没有俯仰角字段**，实际俯冲角只能由高度变化率反推，
+    由调用方（app._update_flight_state）负责按时间积分。
+    """
+    global _state_keys_logged
+    state = fetch_json("/state")
+    if not state or not state.get("valid"):
+        return None
+
+    if not _state_keys_logged:
+        # 只打一次真实字段名，万一键名与预期不符可以立刻看出来
+        _state_keys_logged = True
+        print(f"[8111] /state 字段: {sorted(state.keys())}")
+
+    def _pick(keys):
+        for k in keys:
+            v = state.get(k)
+            if isinstance(v, (int, float)):
+                return float(v)
+            # 某些版本用逗号作小数点（欧洲区域设置）
+            if isinstance(v, str):
+                try:
+                    return float(v.replace(",", "."))
+                except ValueError:
+                    pass
+        return None
+
+    return {
+        "alt": state.get(_ALT_KEY),
+        "ias": _pick(_IAS_KEYS),
+        "tas": _pick(_TAS_KEYS),
+        "raw": state,
+    }
 
 
 def dump_indicator():

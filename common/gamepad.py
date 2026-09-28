@@ -29,8 +29,18 @@ class Gamepad:
 
     def __init__(self):
         self._g = vg.VX360Gamepad()
+        # 总开关（F12）。置 False 后所有飞行输出被丢弃 —— 这是整个程序里
+        # 唯一的手柄输出汇聚点，所以急停只需要在这一个类上做闸门，
+        # 不必去改 app.py 里几十个 gpad.tap(...) 调用。
+        self.enabled = True
         global _gpad_ref
         _gpad_ref = self
+
+    def set_enabled(self, on: bool):
+        """总开关。关闭时先把摇杆/扳机复位再置位，避免飞机卡在满舵上。"""
+        if not on and self.enabled:
+            self.halt()
+        self.enabled = bool(on)
 
     @staticmethod
     def _btn_name(button) -> str:
@@ -59,22 +69,28 @@ class Gamepad:
         self._g.reset()
 
     def left_trigger(self, val: float):
+        if not self.enabled: return
         self._g.left_trigger_float(val)
 
     def right_trigger(self, val: float):
+        if not self.enabled: return
         self._g.right_trigger_float(val)
 
     def left_joystick(self, x: float, y: float):
+        if not self.enabled: return
         self._g.left_joystick_float(x_value_float=x, y_value_float=y)
 
     def right_joystick(self, x: float, y: float):
+        if not self.enabled: return
         self._g.right_joystick_float(x_value_float=x, y_value_float=y)
 
     def press(self, button):
+        if not self.enabled: return
         print(f"[手柄] 按下 {self._btn_name(button)}")
         self._g.press_button(button)
 
     def release(self, button):
+        if not self.enabled: return
         print(f"[手柄] 松开 {self._btn_name(button)}")
         self._g.release_button(button)
 
@@ -82,6 +98,7 @@ class Gamepad:
 
     def tap(self, button, duration: float = 0.1):
         """按下 → 等待 → 松开"""
+        if not self.enabled: return
         name = self._btn_name(button)
         print(f"[手柄] 点按 {name} ({duration:.1f}s)")
         self.press(button)
@@ -92,6 +109,7 @@ class Gamepad:
 
     def press_lb_x(self):
         """LB+X 组合键（批量投弹触发），同时按下"""
+        if not self.enabled: return
         print("[手柄] 按住 LB+X")
         self.press(vg.XUSB_BUTTON.XUSB_GAMEPAD_LEFT_SHOULDER)
         self.press(vg.XUSB_BUTTON.XUSB_GAMEPAD_X)
@@ -99,6 +117,7 @@ class Gamepad:
 
     def release_lb_x(self):
         """松开 LB+X，同时松开"""
+        if not self.enabled: return
         print("[手柄] 松开 LB+X")
         self.release(vg.XUSB_BUTTON.XUSB_GAMEPAD_X)
         self.release(vg.XUSB_BUTTON.XUSB_GAMEPAD_LEFT_SHOULDER)
@@ -106,6 +125,7 @@ class Gamepad:
 
     def pull_bay_lever(self):
         """拉下弹舱拉杆（LT+RT）"""
+        if not self.enabled: return
         print("[手柄] 拉下弹舱拉杆 (LT+RT)")
         self.left_trigger(1.0)
         self.right_trigger(1.0)
@@ -117,6 +137,7 @@ class Gamepad:
 
     def tap_rb(self):
         """RB 单独按键（视角切换 ID_TOGGLE_VIEW）"""
+        if not self.enabled: return
         print("[手柄] 点按 RB")
         self.press(vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_SHOULDER)
         self.update()
@@ -126,6 +147,7 @@ class Gamepad:
 
     def return_to_third_person(self):
         """退出投弹视角/切回第三人称视角。"""
+        if not self.enabled: return
         self.reset()
         self.update()
         time.sleep(0.08)
@@ -137,6 +159,8 @@ class Gamepad:
         默认使用 D-pad Up（方向键上），WT 里把它设成"弹射跳伞"即可。
         hwnd 参数保留但不再使用（键盘方式已改为手柄键）。
         """
+        # 总开关关闭时同样不输出 —— 此时人已经接管了。
+        if not self.enabled: return
         # 长按 D-pad Up 2 秒（WT 跳伞需要按住确认）
         btn = vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_UP
         name = self._btn_name(btn)
@@ -150,7 +174,10 @@ class Gamepad:
     # ---- 生命周期 ----
 
     def halt(self):
-        """停止所有输出（摇杆归中、扳机关闭），但不注销"""
+        """停止所有输出（摇杆归中、扳机关闭），但不注销。
+
+        故意不加总开关守卫：set_enabled(False) 正是靠它先把舵面收回来。
+        """
         self.reset()
         self.update()
 
