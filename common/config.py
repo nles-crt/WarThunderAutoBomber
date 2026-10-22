@@ -82,6 +82,13 @@ _DEFAULTS = {
     "battle_log": True,
     "unknown_log": True,
     "match_wait_warn": 300,
+    # ---- 智能油门（见 common/engine.py）----
+    "smart_throttle": True,
+    "smart_throttle_hot_pct": 100,
+    "smart_throttle_cool_pct": 110,
+    "smart_throttle_cool_s": 10,
+    "smart_throttle_step": 0.25,
+    "smart_throttle_min": 0.0,
     # ---- 其它 ----
     "hotkey_master": "f12",
     "hotkey_master_comment": "总开关热键名。支持 f1~f12 及 pynput 键名；改完需重启程序生效。",
@@ -174,4 +181,16 @@ BATTLE_LOG       = _cfg.get("battle_log", True)
 UNKNOWN_LOG      = _cfg.get("unknown_log", True)
 # 排队等匹配超过这么多秒打一条警告日志。只记录，不按键（按键会取消匹配）。
 MATCH_WAIT_WARN  = _cfg.get("match_wait_warn", 300)
+
+# ---- 智能油门（过热降到 100，否则加力；逻辑全在 common/engine.py）----
+# 触发信号直接取游戏自己打在 HUD 上的 `油温过高` / `水温过高`，复用已有的每 3 秒
+# 整屏 OCR，零额外开销。输出是**闭环**的：读同一帧的 `节流阀` 读数，自己挪摇杆直到
+# 读数等于目标 —— 因为油门轴实测是台阶式的（0.5 和 1.0 都读作 110%加力），
+# 写死一个「加力杆量」在换飞机/换键位之后就不成立了。
+SMART_THROTTLE  = _cfg.get("smart_throttle", True)
+SMART_HOT_PCT   = _cfg.get("smart_throttle_hot_pct", 100)    # 过热时的目标读数
+SMART_COOL_PCT  = _cfg.get("smart_throttle_cool_pct", 110)   # 正常时的目标读数
+SMART_COOL_S    = _cfg.get("smart_throttle_cool_s", 10)      # 告警消失多少秒才算凉
+SMART_STEP      = _cfg.get("smart_throttle_step", 0.25)      # 每轮挪多少杆量
+SMART_MIN       = _cfg.get("smart_throttle_min", 0.0)        # 摇杆下限
 

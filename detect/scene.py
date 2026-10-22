@@ -100,6 +100,28 @@ _SCENES = [
     # 这个界面**不能**改按 X：X 在这个弹窗上是「确认购买」，会真的花掉钱。
     # 不拿 `是` / `否` 当关键词：样本里 `否` 就被 OCR 读成了 `香`。
     ("购买改装件确认", ["还有改装件未购入", "要立刻购买吗"],           1),
+    # 科技树：某台载具研发完成时弹的框。原文见
+    # logs/unknown_20260930_001920.jsonl 00:58:56 / 01:05:17 以及同一时段
+    # logs/scenes_20260930_001920.jsonl 里另外 127 帧：
+    #   `研发完毕 | Do217E-2 | 000条4.3 | 购买`
+    # 整帧只有这 4 个 token，框底下是黑的。它**不是**盖在别的界面上闪一下的浮层：
+    # 129 帧样本的 raw 全是 `未知`，从 00:58:53 连续挂到 01:05:17 —— 所以不需要
+    # `匹配中` 那样的 raw 卡点（那个卡点是为了"浮层和底层界面每隔一帧交替"）。
+    #
+    # **关键词必须整 token 相等**（`=` 前缀，见 _kw_hit）—— 这是这个场景唯一微妙
+    # 的地方。`研发完毕` 作为**子串**还出现在改装件界面的按钮
+    # `购买所有研发完毕的改装件（1900）` 里（51 帧样本），而那个界面按 X、
+    # 这个框按 B，方向相反 —— KEYWORD_BUTTONS 里当初那条裸 `研发完毕` -> B 就是
+    # 这么误按的（logs/scenes_20260928_131739.jsonl 13:17:53 那一帧的 actions 里
+    # X 和 B 同时出现）。整 token 相等把两者完全分开。
+    #
+    # 它顺带还挡住了自污染：机器人自己会打 `场景: 研发完毕`，那一行带时间戳和冒号，
+    # OCR 历来把整行并成一个 token（对照 scene_check.py 的 AMBIGUOUS 注释），
+    # 和 `研发完毕` 不相等。
+    #
+    # 按键由 app.py 的 `_handle_research_done` 走节流阀按 B（返回/取消）——
+    # 框上那个「购买」按钮是花钱的意思，X 在这里不能按。
+    ("研发完毕",    ["=研发完毕"],                                   1),
     ("大厅",        ["战斗", "社区", "商店", "科技树", "战役"], 2),
     ("无重生基地",  ["没有可用的重生基地"],                          1),
     ("观战模式",    ["观战模式"],                                   1),
@@ -173,6 +195,23 @@ def get_keyword_actions(texts):
         if any(kw in t for t in texts):
             result.append((kw, btn))
     return result
+
+
+def _kw_hit(kw, texts):
+    """一个场景关键词是否命中。
+
+    默认是子串匹配（历史行为）。`=` 开头表示**整 token 相等**。
+
+    加这一档是为 `研发完毕` 那个场景：那个框的标题在 OCR 里是**独立的一个文字框**，
+    129 帧样本里就是 `研发完毕` 这一个 token；而改装件界面上的按钮
+    `购买所有研发完毕的改装件（1900）` 只是**包含**这四个字（51 帧样本）。
+    子串匹配分不开这两者 —— 那个界面按 X、这个框按 B，方向相反。整 token 相等
+    可以：129/129 命中这个框，0/51 误伤改装件界面（off-line: tools/scene_check.py）。
+    """
+    if kw.startswith("="):
+        want = kw[1:]
+        return any((t or "").strip() == want for t in texts)
+    return any(kw in (t or "") for t in texts)
 
 
 # ============================================================
@@ -296,7 +335,7 @@ class SceneDetector:
 
             score = 0
             for kw in keywords:
-                if any(kw in t for t in texts):
+                if _kw_hit(kw, texts):
                     score += 1
             scores[scene] = score
 
@@ -304,7 +343,7 @@ class SceneDetector:
                 continue
             # 门控：锚点词一个都没命中 → 本次作废。分数留在 scores 里，
             # 并由 gated_out 记下"本来会赢但被拦住"，场景 log 里直接可查。
-            if gate and not any(any(kw in t for t in texts) for kw in gate):
+            if gate and not any(_kw_hit(kw, texts) for kw in gate):
                 gated_out.append(scene)
                 continue
             if score > best_score:

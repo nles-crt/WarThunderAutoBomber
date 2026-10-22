@@ -25,12 +25,13 @@ python tools/nav_replay.py selftest                         # nav law: plant swe
 python tools/nav_replay.py replay logs/<run>.log            # nav law: real trajectory
 python tools/results_check.py                               # battle-results parser: recorded frames
 python tools/scene_check.py                                 # scene keyword table: recorded frames
+python tools/engine_check.py                                # smart throttle: parse real frames + control sim
 ```
 
 No test framework or build system is configured — this is a runtime-only application.
 `PyQt5` is optional: without it `main.py` falls back to a headless idle loop and the bot still runs.
 
-Because so little of this code can be run off-line, `tools/` holds the four things that can be.
+Because so little of this code can be run off-line, `tools/` holds the five things that can be.
 
 **`tools/namecheck.py` is the important one, and it must be run in both of its modes after any
 structural edit to `app.py`.** Plain mode is AST-only and catches a misspelled or unimported name
@@ -84,11 +85,13 @@ main thread → gui.run_gui(app) → QApplication.exec_()
 | `common/nav_law.py` | `NavLaw` — the post-bomb glideslope coupler as pure numerics (no IO, no deps), so `tools/nav_replay.py` can close the loop around the *shipping* law |
 | `detect/yolo.py` | Ultralytics YOLO wrapper with `_refine_box_center()` for thin bboxes |
 | `common/results.py` | Battle-results OCR parser as pure functions (no IO, no deps), so `tools/results_check.py` can regression-test it against recorded frames — same reason `nav_law.py` exists |
+| `common/engine.py` | Engine-temperature → throttle target: `parse_engine()` reads `节流阀` / `油温过高` out of one OCR frame, `SmartThrottle` is the closed loop that servos the stick onto the reading. Pure (`re` only), so `tools/engine_check.py` can drive it off-line. See 「智能油门」 |
 | `detect/scene.py` | OCR via `rapidocr_onnxruntime` — scene classification + UI button triggers |
 | `x360_keyboard.py` | Standalone utility — keyboard → virtual gamepad via pynput (not used by bomber) |
 | `tools/nav_replay.py` | Offline check for the nav leg — `selftest` (plant sweep, no game) and `replay <log>` (feed a real trajectory through the law). stdlib only |
 | `tools/results_check.py` | Offline regression for the battle-results parser — feeds the `战果汇总` frames recorded in `logs/` through `common/results.py`. Stdlib only; skips (not fails) if the fixture logs were cleaned |
 | `tools/scene_check.py` | Offline regression for the scene keyword table — picks frames out of the recorded `logs/scenes_*.jsonl` by marker word and asserts what the **current** `detect/scene.py` says about them. Imports `detect.scene`, so it loads cv2/rapidocr; skips (not fails) if the fixture logs were cleaned |
+| `tools/engine_check.py` | Offline regression for the smart throttle — feeds every recorded `节流阀` frame through `common/engine.py` (parse rate, value range, hot coverage) and drives `SmartThrottle` against three synthetic plants to assert it converges and **stops**. Stdlib only; skips (not fails) if the fixture logs were cleaned |
 
 ### Live Parameter Tuning (`gui.py`)
 
@@ -166,6 +169,18 @@ points and wins outright. The anchors (`节流阀 / 燃油量 / 海拔高度 / �
 only appear on the in-flight HUD. `gated_out` in the JSONL scene log lists scenes that would have
 won but were gated, so "why wasn't this 战斗中?" is answerable from the log alone.
 
+**Whole-token keywords (`=` prefix).** A keyword starting with `=` matches a token that is
+**exactly equal** to the rest, instead of a substring (`scene.py`'s `_kw_hit`). Substring is still
+the default and still right for almost everything — this exists for one scene, 研发完毕, and the
+reason is the whole point of the mechanism: that popup's title comes back from OCR as its **own
+text box**, the token `研发完毕`, in all 129 recorded frames; the mods screen's button
+`购买所有研发完毕的改装件（1900）` merely *contains* those four characters (51 frames). The two
+screens want **opposite keys** (X vs B), so telling them apart is not cosmetic. Whole-token matching
+separates them exactly — 129/129 and 0/51, asserted off-line by `tools/scene_check.py`. It has a
+second, free benefit: the bot prints `场景: 研发完毕` itself, and that line carries a timestamp and
+a colon, so it can never equal the keyword. Before adding a `=` keyword anywhere else, check the
+recorded frames: if the screen's text was never a standalone box, this is the wrong tool.
+
 **Decisive scenes (`_DECISIVE`).** 匹配中 and 机组锁定 win on presence, ignoring score. The
 matchmaking overlay is drawn *on top of* the hangar, so the hangar's 社区/商店/科技树 still OCR
 fine and 大厅 scores 3 while 匹配中 scores 1 — by score, 大厅 always wins, and then `_handle_lobby`
@@ -185,7 +200,7 @@ is already cancelled by the first one. The three-way rotation 匹配中/大厅/�
 the bug is specifically "the current scene keeps reappearing", which is what a semi-transparent
 overlay does.
 
-Seven scenes deliberately have **no `SCENE_BUTTONS` entry** — that table is pressed every scan, so
+Eight scenes deliberately have **no `SCENE_BUTTONS` entry** — that table is pressed every scan, so
 it can only hold keys that are safe to repeat indefinitely. Each owns its cadence in `app.py`, and
 every one of their presses goes through the throttle valve (see the next section):
 
@@ -227,9 +242,13 @@ every one of their presses goes through the throttle valve (see the next section
 - **需选载具** — the 「开始任务前必须先点选一台可供出击的载具。」 popup: one 确定 button, no other
   choice. It appears when the result overlay's 「加入战斗！」 is pressed on a **non-respawn** map
   after death — the line-up has no aircraft left to spawn. The bot cannot pick one for the player
-  (nothing in the vehicle list signals which are available), so `_handle_needs_vehicle` presses
-  确定 once and keeps retrying the join on the 30s clock. Deliberately a retry and not a stop:
-  stopping parks the whole automation until a human notices.
+  (nothing in the vehicle list signals which are available), so `_handle_needs_vehicle` dismisses
+  the prompt and keeps retrying the join. Deliberately a retry and not a stop: stopping parks the
+  whole automation until a human notices.
+  It is the **one screen that does not use `UI_RETRY_S`**: it runs on its own 5 s clock
+  (`NEEDS_VEHICLE_RETRY_S` / `App._needs_vehicle_next`) and alternates **X, B, X, B…** across
+  successive presses (X is the popup's own 确定; B tries to back the UI out a level). See the
+  throttle-valve section for why shrinking the shared clock instead would be the wrong fix.
 - **选择新的研发项** — the mods / research screen that appears after a battle
   (`logs/scenes_20260928_131739.jsonl` 13:17:53, `..._114629.jsonl` 11:46:37). `_handle_mods_screen`
   presses **X**. It was **B** until a live report that B does not clear this screen — X is what
@@ -247,8 +266,24 @@ every one of their presses goes through the throttle valve (see the next section
   be pressed — X here is "confirm the purchase", and that is 1520 象. `是` / `否` are
   deliberately not keywords — the sample frame OCRs `否` as `香`, so the two buttons are not
   readable well enough to key on.
+- **研发完毕** — the tech tree's 「this vehicle finished researching」 popup, `_handle_research_done`,
+  **B**. Recorded text (`logs/unknown_20260930_001920.jsonl` 00:58:56 / 01:05:17):
+  `研发完毕 | Do217E-2 | 000条4.3 | 购买` — four tokens, black behind them. Same trade as
+  购买改装件确认: the box's one readable button is 「购买」, so **X here is "spend silver"** and B is
+  the only safe key. Deliberately a *new scene* rather than a widened 未知: the user asked for B on
+  this box and explicitly **not** on 未知, which is a fallback bucket holding the hangar, loading
+  screens and the kill overlay — B is "exit" on those.
+  It is also why whole-token keywords exist (see the `=` prefix above): `研发完毕` as a *substring*
+  is inside the mods screen's `购买所有研发完毕的改装件（1900）` button, and that screen wants X.
+  The 129/129-and-0/51 split is asserted by `tools/scene_check.py`.
+  **B clearing this box is inferred, not observed** — no recording shows the box gone after a B,
+  because the shipping code was pressing X there (12 times over 5½ minutes, to no effect:
+  `logs/20260930_001920.log` 00:59:23 → 01:04:59). One line to switch to `"X"` if it turns out B
+  does nothing, the same as 机组锁定.
+  Unlike the 匹配中 overlay it does **not** need the raw gate: all 129 frames read `raw: 未知`, one
+  continuous stay, no alternation with an underlying screen.
 
-Both go through `_press_throttled`, so a screen that somehow fails to clear gets one more press
+All three go through `_press_throttled`, so a screen that somehow fails to clear gets one more press
 in 30 s rather than a per-scan key loop — the same trade as `_handle_needs_vehicle`.
 
 They are two handlers rather than one, and that is not tidiness: **X means opposite things on
@@ -272,21 +307,35 @@ log has a real sample.
 
 ### The X-press throttle valve (`UI_RETRY_S` / `App._retry_next`)
 
-Four screens need "press X on a screen I don't fully understand": 大厅 (join battle), 战果汇总
-(leave the results), 需选载具 (dismiss the popup) and 未知 (close whatever dialog this is). They
-share **one** clock — `App._retry_next`, with `UI_RETRY_S = 30` — through
-`App._press_throttled(btn, ...)`, which is the general form. `App._press_x_throttled()` survives
-as a one-line wrapper so the four existing call sites did not move. The two screens above press
-**X** and **B** respectively on the same clock, which is why the button had to become a parameter
-instead of a second timer.
+Three screens need "press X on a screen I don't fully understand": 大厅 (join battle), 战果汇总
+(leave the results) and 未知 (close whatever dialog this is). They share **one** clock —
+`App._retry_next`, with `UI_RETRY_S = 30` — through `App._press_throttled(btn, ...)`, which is the
+general form. `App._press_x_throttled()` survives as a one-line wrapper so the three existing call
+sites did not move. The two screens above press **X** and **B** respectively on the same clock,
+which is why the button had to become a parameter instead of a second timer.
 
 The single clock is the point, not an implementation detail. Per-handler timers were tried and one
 of them leaked every time: 大厅's used to be cleared inside its own `elapsed > 60` branch, which
 turned "retry after 30s" back into "press every scan" for the 30–60s stretch. **Nothing resets
 `_retry_next`**, so there is no state in which a scene change can zero a timer and press again
 immediately. The cost is real and accepted: moving between two of those screens, the first press
-can wait up to `UI_RETRY_S`. `UI_RETRY_S` is the one knob for all six screens that press through
-it.
+can wait up to `UI_RETRY_S`. `UI_RETRY_S` is the one knob for the screens that press through it.
+
+**The one exception is 需选载具, on its own 5 s clock** (`NEEDS_VEHICLE_RETRY_S` /
+`App._needs_vehicle_next`), and the reason is that the obvious fix — shrink `UI_RETRY_S` — is the
+wrong one. That clock is shared with 大厅, and 5 s there is the 260-presses, zero-battles-entered
+failure mode above; it would also speed up the known 战果汇总 → 「加入战斗！」 → 需选载具 → dismiss
+→ back to 战果汇总 loop (`logs/scenes_20260928_140707.jsonl` from idx79, 37 rounds). 需选载具 alone
+is a dead end that is worth retrying fast, so it got its own clock. Both clocks drive the *same*
+press body — `App._press_on_clock(clock_attr, interval, btn, why, label)`, which is what
+`_press_throttled` now is a two-line wrapper around — so "press + log + append to `_actions`" still
+has exactly one implementation and neither clock can grow a private copy of it. The same rule
+applies to the new clock as to the old one: **nothing resets `_needs_vehicle_next`.**
+
+需选载具 also **alternates X and B** across presses (`App._needs_vehicle_x`), which is a deliberate
+departure from "X only" elsewhere: X is the popup's own 确定, B tries to back the UI out a level.
+Both are safe *here* because the screen is recognised and its keys are known — the "X only, never
+B or A" rule belongs to 未知, where by definition no decision is available.
 
 Two more rules live in the same block of `_state_monitor_loop`:
 
@@ -324,6 +373,10 @@ Two more rules live in the same block of `_state_monitor_loop`:
   escape from it was an accidental misfire, not design. Narrowed to `均研发完毕` (present in both
   popup samples, absent from both mods-screen samples), and the now-redundant `选择新的研发: X`
   entry was deleted. Off-line: `tools/scene_check.py`.
+  The **second** collision on the same four characters is the reason whole-token keywords exist:
+  the tech tree's 研发完毕 popup wants **B** while the mods button wants **X**, and neither
+  `研发完毕` nor `购买` can be narrowed the way `均研发完毕` was. See the `=` prefix under
+  "Scene recognition" — there the two are separated by token equality, not by a longer word.
 
 ### Scene log (`logs/scenes_*.jsonl`)
 
@@ -442,6 +495,60 @@ slot is undefined behaviour). `exec_()` then returns normally and `main.py`'s `f
 2. **guide** — approach phase: same as track, full throttle
 3. **bomb_coarse** — in bomb view but not yet fine-aiming
 4. **bomb_fine** — bomb sight PID-style fine correction (left stick = aircraft, right stick = sight)
+
+### 智能油门 (`common/engine.py`)
+
+「过热降到 100%，否则加力」。触发信号是游戏自己打在 HUD 上的 `油温过高` / `水温过高`，
+读数是同一帧的 `节流阀` —— 两者都从**已经跑过的每 3 秒整屏 OCR** 里拿，零额外开销。
+逻辑全在 `common/engine.py`（纯函数，只 `import re`），所以 `tools/engine_check.py`
+能拿真帧和假想被控对象把它跑一遍。
+
+**为什么是闭环，而不是「加力给 1.0、降温给 0.3」——这是这个功能的全部理由。**
+把 `logs/scenes_*.jsonl` 的 `节流阀` 读数和同名 `.log` 里 `手柄 L:(x,y)` 的 y 值按时间戳
+对齐之后（22 份录音、2900 余帧）：
+
+| 命令的 y | HUD `节流阀` |
+|---|---|
+| 0.0 ~ 0.36 | `100%` |
+| 0.5 / 0.55 / 0.8 / 1.0 | `110%加力`（2900 余帧） |
+
+**这根轴是台阶式的，不是线性的**，阈值大致落在 0.4 附近（顺带说明：投弹视角那个 0.55
+和返航那个 0.8 其实也一直压在加力上）。台阶具体在哪、换飞机换键位会不会挪，都是先验
+未知的。所以代码里**不写死任何一个「加力杆量」**，而是拿 HUD 自己的读数做闭环，自己找。
+
+**控制器只有一条规则**：`|目标 - 读数| <= 死区` 就原地不动，否则朝目标挪一步
+（`smart_throttle_step`，默认 0.25）。读不到读数就一步不动 —— 宁可维持现状，
+也不拿猜的数字去挪油门。先写过一版「记住切换点 + 回退边距」的，离线仿真证明它在线性轴上
+会**极限环**（0.92↔1.00 反复横跳、读数 100↔92）；**别把那套加回来**，规则越简单越稳。
+步长 0.25 而不是 0.10：扫描周期 3 秒，0.10 从加力降到 100% 要走 6 步 = 18 秒，0.25 只要
+9 秒，而降温是有时限的。
+
+**为什么它天生安全**：两个目标（100 / 110）都在读数的上半段，所以**只有读数高于目标时
+命令才会往下走**。读数被读成 0、读成 133、或者整帧读丢，都只会把油门**往上**推。
+摇杆下限 `smart_throttle_min`（默认 0.0，实测这一档就是 100%）兜住另一头：哪怕一路压到底，
+也还是巡航油门，不是空中停车。
+
+**告警迟滞**（`smart_throttle_cool_s`，默认 10 秒）：告警一出现立刻置位，要连续 10 秒没有
+告警才降回。发动机温度掉得没那么快，OCR 又只有 3 秒一拍，不迟滞就会在 100/110 之间来回切。
+注意 HUD 和状态页显示的是**迟滞后**的 `smart.hot`，而 `_engine["hot"]` 是这一帧的原始信号，
+两者在迟滞窗口内**本来就会不一致**。
+
+**接管范围**：只在 `track` / `guide` 且 `ly >= SMART_GOVERN_AT`（0.9）时接管 ——
+也就是「这个阶段本来就要求油门全开」的巡航。掉头 0.5、投弹视角 0.55、返航 0.8 这些
+**刻意的**减速一律不碰。返航航段根本不走 `_apply_control_output`（它直接调
+`gpad.left_joystick`），所以天然不可能和这里的输出打架。
+
+**唯一的出口在 `_apply_control_output`**，就地改 `out["ly"]`：`_control_loop` 是先把 `out`
+存进 `_last_control_state`、再调这里、最后才 `_log_control`，所以 HUD 和日志看到的都是
+**实际发出去**的杆量。整定值走 `_smart_tunes()`（每次重读模块全局），和 `_nav_tunes()`
+同一套热生效机制。
+
+**第一次飞行是标定飞行。** 台阶那张表是从日志相关性反推出来的**假设**，不是实测；
+`tools/engine_check.py` 只证明「给一个台阶轴，控制器会收敛并停住」，不证明游戏里那根轴
+就是这个台阶。判据是日志里那行 `智能油门: ...，摇杆 x→y`：过热时摇杆应当一路下走、
+读数掉到 `100%` 后停住。若**摇杆在下走而读数钉在 `110%加力` 不动**，说明这根轴其实是
+「相对微调」语义（居中 = 保持、只有往下推才减油门），那时不要改 STEP，而是单飞一局标定
+一个允许负命令的版本 —— 在那之前**不要把 `smart_throttle_min` 改成负数**。
 
 ### The dive positive feedback (and why there is no `dive_angle` parameter)
 
@@ -699,10 +806,20 @@ All tunables in `config.json` (no code changes needed). Key parameters:
   real recorded samples.
 - `hotkey_master` — master-switch key (pynput name, e.g. `f12`); **restart required** to change
 - `auto_bomb` — **restart required** (read once in `App.start()`, `app.py:261`)
+- `smart_throttle` — the smart-throttle master switch (see 「智能油门」). **Hot-applies** (GUI
+  「油门」 group). Off = the cruise throttle is whatever the phase asked for, as before.
+- `smart_throttle_hot_pct` / `smart_throttle_cool_pct` — the target *readout* while overheating and
+  while normal (defaults 100 / 110). These are targets for the HUD's own number, not stick values —
+  the stick value is found by the loop, on purpose (see the section above for why).
+- `smart_throttle_cool_s` — seconds without a warning before it counts as cooled (default 10).
+- `smart_throttle_step` — stick moved per scan (default 0.25 ≈ 9 s from afterburner to 100%).
+  Re-run `tools/engine_check.py` after changing it.
+- `smart_throttle_min` — stick floor (default 0.0). **Do not make it negative** without a live
+  calibration sortie; see the relative-nudge caveat in 「智能油门」.
 
 Not in `config.json`: the anti-feedback taper is `GUIDE_DIVE_BAND` / `GUIDE_DIVE_FADE` in `app.py`
-(see "The dive positive feedback"). They are code constants, not tunables — there is deliberately
-no dive-angle knob to turn.
+(see "The dive positive feedback"), and `SMART_GOVERN_AT` (0.9) next to it. They are code
+constants, not tunables — there is deliberately no dive-angle knob to turn.
 
 Every key has a sibling `_<key>` string documenting it; GUI saves must preserve those keys verbatim.
 

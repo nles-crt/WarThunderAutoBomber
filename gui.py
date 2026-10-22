@@ -86,6 +86,27 @@ FIELDS = [
     dict(key="stolen_timeout", label="目标丢失放弃超时 (s)", kind="int",
          rng=(1, 60, 1), glob="STOLEN_TIMEOUT", group="追踪"),
 
+    # ---- 油门（智能油门：过热降到 100，否则加力；见 common/engine.py）----
+    dict(key="smart_throttle", label="智能油门", kind="bool",
+         glob="SMART_THROTTLE", group="油门",
+         note="过热(油温/水温过高)就把节流阀收到目标读数，凉了回到加力。"
+              "只在巡航/引导阶段接管，投弹视角和返航不碰"),
+    dict(key="smart_throttle_hot_pct", label="过热目标读数 (%)", kind="int",
+         rng=(50, 110, 1), glob="SMART_HOT_PCT", group="油门",
+         note="过热时想要的节流阀读数，100 = 不开加力"),
+    dict(key="smart_throttle_cool_pct", label="正常目标读数 (%)", kind="int",
+         rng=(50, 120, 1), glob="SMART_COOL_PCT", group="油门",
+         note="没过热时想要的节流阀读数，110 = 加力"),
+    dict(key="smart_throttle_cool_s", label="冷却判定 (s)", kind="int",
+         rng=(0, 120, 1), glob="SMART_COOL_S", group="油门",
+         note="告警消失后要连续这么多秒才回到加力，避免在 100/110 之间来回切"),
+    dict(key="smart_throttle_step", label="每轮步长", kind="float",
+         rng=(0.05, 1.0, 0.05), glob="SMART_STEP", group="油门",
+         note="每轮扫描(约3秒)挪多少杆量。改完请跑 tools/engine_check.py"),
+    dict(key="smart_throttle_min", label="摇杆下限", kind="float",
+         rng=(0.0, 1.0, 0.05), glob="SMART_MIN", group="油门",
+         note="不要改成负数"),
+
     # ---- 信号翻转 ----
     dict(key="track_right_x_sign", label="追踪 右摇杆X", kind="choice",
          rng=[("正常 (1)", 1), ("反向 (-1)", -1)], glob="TRACK_RIGHT_X_SIGN", group="信号翻转"),
@@ -175,7 +196,7 @@ FIELDS = [
          glob="HOTKEY_MASTER", group="HUD", note="重启生效"),
 ]
 
-GROUP_ORDER = ["投弹", "追踪", "信号翻转", "模型", "导航", "场景", "HUD"]
+GROUP_ORDER = ["投弹", "追踪", "油门", "信号翻转", "模型", "导航", "场景", "HUD"]
 
 
 # ==================== config.json 读写 ====================
@@ -402,6 +423,20 @@ class HudWindow(QWidget):
             dive_s += " ⚠"
             dive_c = warn
         lines.append((f"升降: {vs_s:<12} 实际俯冲角: {dive_s}", dive_c))
+
+        # 智能油门：过热整行变红，一眼看出它现在想干什么（读数是 HUD 自己报的）
+        smart, eng = getattr(a, "smart", None), getattr(a, "_engine", None) or {}
+        if smart is None or not self.cfg.get("smart_throttle", True):
+            th_s, th_c = "关", dim
+        else:
+            pct = eng.get("pct")
+            read = "读不到" if pct is None else (
+                f"{pct}%{'加力' if eng.get('wep') else ''}")
+            hot = getattr(smart, "hot", False)
+            th_s = (f"智能 {getattr(a, '_engine_target', 0):.0f}% "
+                    f"(杆 {smart.cmd:.2f}) {'过热' if hot else '正常'} {read}")
+            th_c = warn if hot else dim
+        lines.append((f"油门: {th_s}", th_c))
 
         return lines
 
@@ -664,7 +699,7 @@ class MainWindow(QMainWindow):
             ("state", "总状态"), ("scene", "游戏场景"), ("mode", "控制模式"),
             ("sticks", "摇杆输出"), ("cycle", "轰炸轮次"),
             ("target", "目标战区"), ("alt", "高度"), ("ias", "表速"),
-            ("vs", "升降率"), ("dive", "实际俯冲角"),
+            ("vs", "升降率"), ("dive", "实际俯冲角"), ("throttle", "智能油门"),
         ]:
             lab = QLabel("-")
             self.status_fields[key] = lab
@@ -800,6 +835,19 @@ class MainWindow(QMainWindow):
             f["ias"].setText(_num(ias, "{:.0f} km/h"))
             f["vs"].setText(_num(fl.get("vs"), "{:+.1f} m/s"))
             f["dive"].setText(_num(fl.get("dive_angle"), "{:.1f}°"))
+
+            smart, eng = getattr(a, "smart", None), getattr(a, "_engine", None) or {}
+            if smart is None:
+                f["throttle"].setText("-")
+            else:
+                pct = eng.get("pct")
+                read = "读不到" if pct is None else (
+                    f"{pct}%{'加力' if eng.get('wep') else ''}")
+                f["throttle"].setText(
+                    f"{'过热' if getattr(smart, 'hot', False) else '正常'} "
+                    f"目标 {getattr(a, '_engine_target', 0):.0f}% "
+                    f"杆 {smart.cmd:.2f} 读数 {read}"
+                )
 
             # 日志增量追加
             with a._log_lock:

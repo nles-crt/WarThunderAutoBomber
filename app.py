@@ -73,11 +73,20 @@ from common.config import (
     BATTLE_LOG,
     UNKNOWN_LOG,
     MATCH_WAIT_WARN,
+    # 智能油门（过热降到 100、否则加力；逻辑全在 common/engine.py）
+    SMART_THROTTLE,
+    SMART_HOT_PCT,
+    SMART_COOL_PCT,
+    SMART_COOL_S,
+    SMART_STEP,
+    SMART_MIN,
 )
 from common.window import find_windows, get_rect, capture
 from common.utils import map_val
 from common.nav_law import NavLaw
 from common.results import parse as parse_battle_results, self_window_hits
+from common.engine import (parse_engine, SmartThrottle,
+                           DEADBAND_DEFAULT as SMART_DEADBAND)
 from common.gamepad import Gamepad, VGAME_OK
 from detect.yolo import YOLO
 from detect.scene import detect_state, get_scene_button, get_keyword_actions, SceneDetector
@@ -103,14 +112,35 @@ GUIDE_DIVE_FADE = 0.30   # 再低这么多比例后，低头指令归零（0 = �
 
 # "看不懂/不确定"的界面上，X 最快按一次的间隔（秒）。
 #
-# 大厅 / 战果汇总 / 需选载具 / 未识别 这四类界面都**不在 SCENE_BUTTONS 里**
+# 大厅 / 战果汇总 / 未识别 这**三类**界面都不在 SCENE_BUTTONS 里
 # （那张表是"每轮扫描都按一次"的），按键统一走 `_press_x_throttled()`，共用
 # 这一个时钟。为什么必须是一个全局时钟，写在那个方法的注释里。
+# 「需选载具」原本也共用它，2026-09-29 改用自己 5 秒的钟 —— 见
+# NEEDS_VEHICLE_RETRY_S（在下面）。
 UI_RETRY_S = 30
+
+# 「需选载具」弹窗单独用一个 5 秒的钟，**不跟上面那个 30 秒的共用**。
+#
+# 这个框是条死路：机器人没法替玩家挑载具（载具列表里没有"哪台可用"的信号），
+# 只能把提示关掉、再试一次加入。用户要求试快一点，并且 X / B 两个键轮流按
+# （X 是框里那个「确定」，B 是想让界面退到更上一层）。
+#
+# 为什么不干脆把 UI_RETRY_S 改小：那个钟是 大厅 / 战果汇总 / 未知 /
+# 选择新的研发项 / 购买改装件确认 共用的，改小会**加速**
+# 「战果浮层的 X → 加入战斗 → 需选载具 → 关掉 → 又回到战果浮层」那个已知循环
+# （logs/scenes_20260928_140707.jsonl idx79 起，37 轮），并且把 大厅 重新变成
+# 每 5 秒按一次 X —— 那正是 260 次 X、一个战斗都没进的事故形态。
+NEEDS_VEHICLE_RETRY_S = 5
 
 # 连续多少轮认不出场景才开始按 X。单帧误判不该触发按键，等几轮更稳
 # （扫描周期默认 3 秒，所以 3 轮 ≈ 9 秒）。
 UNKNOWN_ACK_STREAK = 3
+
+# 智能油门只在「这个阶段本来就要求油门全开」时才接管：track / guide 且杆量 >= 本值。
+# 掉头 0.5、投弹视角 0.55、返航 0.8 这些**刻意的**减速一律不碰 —— 它们本来就不是
+# 巡航油门（顺带一提：实测那两档其实也还压在加力上，但那是另一回事，不在这里改）。
+# 和 GUIDE_DIVE_BAND 一样是代码常量，不进 config。
+SMART_GOVERN_AT = 0.9
 
 # 按钮名 -> vgamepad 键位。节流阀和通用按键块共用这一份，
 # 免得同一张表在文件里出现两遍、改了一处漏了另一处。
@@ -134,6 +164,13 @@ def _nav_tunes():
         throttle_kv=NAV_THROTTLE_KV, throttle_min=NAV_THROTTLE_MIN,
         ias_ref=NAV_IAS_REF, target_alt=NAV_TARGET_ALT, min_v=MIN_V,
     )
+
+
+def _smart_tunes():
+    """智能油门的整定值。**每步重建一次**，理由同 _nav_tunes()：app.py 是按值
+    import 常量的，GUI 的热改是 setattr 到本模块全局，只有每次重读一遍才立刻生效。"""
+    return dict(hot_pct=SMART_HOT_PCT, cool_pct=SMART_COOL_PCT, cool_s=SMART_COOL_S,
+                step=SMART_STEP, deadband=SMART_DEADBAND, lo=SMART_MIN)
 
 
 class App:
@@ -186,6 +223,10 @@ class App:
         # 共用的按键节流时钟，见 _press_x_throttled()。0 = 立刻可以按。
         # **任何地方都不要重置它** —— 那正是"重置→立刻又按"死循环的来源。
         self._retry_next = 0.0
+        # 「需选载具」自己的钟 + X/B 轮换开关。单独一个钟的理由见
+        # NEEDS_VEHICLE_RETRY_S。和 _retry_next 一样，**任何地方都不要重置它**。
+        self._needs_vehicle_next = 0.0
+        self._needs_vehicle_x = True
         # 本轮按下的键（主循环每轮把它的 actions 指过来），handler 内部
         # 按的键也记在这里，写进场景 log 供排查。
         self._actions = []
@@ -193,6 +234,16 @@ class App:
         # 态没有可靠信号（HUD 里是图标不是文字，8111 也不给），所以改成
         # 一局只拉一次：出生时舱门必关，拉一次必然变成开。
         self._bay_pulled = False
+
+        # ---- 智能油门（逻辑见 common/engine.py）----
+        # 发动机过热（HUD 打出 油温过高/水温过高）就把节流阀收到 hot_pct，凉了再回
+        # cool_pct；具体杆量由闭环自己从同一帧的 `节流阀` 读数里找 —— 实测这根轴是
+        # 台阶式的（0.5 和 1.0 都读作 110%加力），写死一个「加力杆量」换台飞机就不成立。
+        # 和 _retry_next 同一个约定：**没有任何地方重置 self.smart.cmd**。
+        self.smart = SmartThrottle(1.0)
+        self._engine = {"pct": None, "wep": False, "hot": False, "words": []}
+        self._engine_target = SMART_COOL_PCT   # 当前目标读数（HUD / 日志用）
+        self._engine_key = None                # 上次打日志时的状态，只在变化时打
 
         # ---- 总开关（F12）----
         # 故意独立于 self.running：running 被 _drop_bombs / _finish_bomb_cycles
@@ -459,6 +510,12 @@ class App:
 
             new_scene, texts = self.scene_detector.scan(frame)
 
+            # 智能油门：每轮扫描喂一次，和认出来是什么场景无关。触发信号是游戏自己
+            # 打在 HUD 上的 油温过高/水温过高，读数是同一帧的 `节流阀` —— 整屏 OCR
+            # 已经跑过了，这里是零额外开销。算出来的杆量放进 self.smart.cmd，
+            # 真正写进摇杆是在 _apply_control_output 里（所有手柄输出的唯一出口）。
+            self._update_smart_throttle(texts)
+
             # 排队浮层是**半透明盖在机库上**的：社区/商店/科技树照样读得到，
             # 所以 raw 会在 匹配中/大厅/未知 之间来回跳；而消抖的候选计数只在**当前
             # 场景自己出现的那一帧**被清零（scene.py 的 _stabilize_scene）—— 只要排队
@@ -541,18 +598,23 @@ class App:
                 self._handle_mods_screen(new_scene)
             elif new_scene == "购买改装件确认":
                 self._handle_buy_prompt(new_scene)
+            elif new_scene == "研发完毕":
+                self._handle_research_done(new_scene)
 
             # 战果记录：一次结算画面只记一条，所以卡 `changed`（进入那一帧）而不是
             # 每帧都记 —— 理由见 _battle_log_write 的 docstring。
             if changed and new_scene == "战果汇总":
                 self._battle_log_write(texts, tick_wall)
 
-            # 通用按键：**排队和机组锁定一律跳过**。
-            # 排队时任何按键都可能把正在进行的匹配取消掉；机组锁定由 handler
-            # 自己精确按一次 B，通用按键会跟着再按一遍变成死循环。
+            # 通用按键：**下面这些界面一律跳过** —— 它们都有自己的 handler，
+            # 通用表（含 KEYWORD_BUTTONS）会在同一帧再按一个方向可能相反的键：
+            # 排队时任何按键都会取消正在进行的匹配；机组锁定按两次 B 是按键死循环；
+            # 研发完毕 / 改装件界面 / 购买弹窗上 X 和 B 的含义各不相同，
+            # 其中两个的 X 是"花钱"。
             if (self.gpad and not self.aim_lock and not self.cycle_active
                     and new_scene not in ("匹配中", "机组锁定",
-                                          "选择新的研发项", "购买改装件确认")):
+                                          "选择新的研发项", "购买改装件确认",
+                                          "研发完毕")):
                 btn_map = _PAD_BTN
                 btn = get_scene_button(new_scene)
                 pressed = False
@@ -752,36 +814,52 @@ class App:
             # 和另外两份 log 一样：诊断用的东西绝不能把监控循环搞挂
             self.log(f"未知画面记录写入失败: {e!r}")
 
-    def _press_throttled(self, btn, why, label):
-        """节流阀的通用形式：`btn` 取 'X' / 'B' / 'A'。真按了返回 True。
+    def _press_on_clock(self, clock_attr, interval, btn, why, label):
+        """在**指定的钟**上按一次键。`clock_attr` 是实例属性名，`interval` 是秒。
 
-        键位不同，但**时钟只有一个**（`self._retry_next`）。抽这一层出来，
-        是为了让「退出这个界面」的两个新 handler 复用同一个钟（一个按 X、一个按 B）
-        —— 各写一套计时必然会漏一处，这是这个仓库已经踩过的坑。
+        钟只有两个：
+          - `_retry_next` / `UI_RETRY_S`（30 秒）：大厅 / 战果汇总 / 未知 /
+            选择新的研发项 / 购买改装件确认 共用，见 _press_throttled()。
+          - `_needs_vehicle_next` / `NEEDS_VEHICLE_RETRY_S`（5 秒）：只有
+            「需选载具」用，理由写在那个常量的注释里。
+
+        抽这一层是为了让"按键 + 打日志 + 记 actions"只有一份实现 ——
+        各写一套必然会漏一处，这是这个仓库已经踩过的坑。
         """
         if not self.gpad:
             return False
         now = time.time()
-        if now < self._retry_next:
+        if now < getattr(self, clock_attr):
             return False
-        self._retry_next = now + UI_RETRY_S
+        setattr(self, clock_attr, now + interval)
         self.log(why)
         self.gpad.tap(_PAD_BTN[btn])
         self._actions.append(label)
         return True
 
+    def _press_throttled(self, btn, why, label):
+        """节流阀的通用形式：`btn` 取 'X' / 'B' / 'A'。真按了返回 True。
+
+        键位不同、handler 不同，但**共用同一个钟**（`self._retry_next`）。
+        为什么是一个钟而不是各管各的，写在 UI_RETRY_S 的注释里。
+        """
+        return self._press_on_clock("_retry_next", UI_RETRY_S,
+                                    btn, why, label)
+
     def _press_x_throttled(self, why, label="tap:X"):
         """所有"看不懂/不确定"的界面共用的 X 节流阀。返回 True 表示这次真按了。
 
-        四类界面都要按 X —— 大厅（加入战斗）、战果汇总/退出中（离开结算）、
-        需选载具（按确定关提示）、未识别（关弹窗）—— 但都不能按快：
+        三类界面要按 X —— 大厅（加入战斗）、战果汇总/退出中（离开结算）、
+        未识别（关弹窗）—— 但都不能按快：按快了会把正在进行的匹配掐掉，
+        实测 logs/scenes_20260928_131739.jsonl 13:34:59 → 13:48:02 按了 260
+        多次 X，一次战斗都没进。
 
-        - 按快了会把正在进行的匹配掐掉：实测 logs/scenes_20260928_131739.jsonl
-          13:34:59 → 13:48:02 按了 260 多次 X，一次战斗都没进；
-        - 按快了会把机器人卡在弹窗里：logs/scenes_20260928_140707.jsonl 里
-          「需选载具」弹出后每 3 秒被重开一次，在屏幕上挂了 2 分钟。
+        「需选载具」原本也在这里（当年 140707 那次 2 分钟卡死就是它），
+        2026-09-29 搬走了：它改用自己 5 秒的钟、X/B 轮流按，见
+        `_handle_needs_vehicle` 和 NEEDS_VEHICLE_RETRY_S。那个框是条死路，
+        值得按快一点；把**这个**钟改小却会连累上面三类界面（尤其大厅）。
 
-        各写一套计时必然会漏一处，所以只留**一个全局时钟**。关键在
+        各写一套计时必然会漏一处，所以这里只留**一个全局时钟**。关键在
         `self._retry_next` **没有任何路径会重置它** —— 也就不存在
         "换了场景 → 计时归零 → 立刻又按"这种循环。
 
@@ -789,7 +867,7 @@ class App:
         这是有意的取舍，UI_RETRY_S 本来就是这个重试周期。
 
         实现体搬到了 `_press_throttled`（只是把键位参数化），这里保留原签名和
-        原行为 —— 四个既有调用方一处都不用动。
+        原行为 —— 既有调用方一处都不用动。
         """
         return self._press_throttled("X", why, label)
 
@@ -946,6 +1024,30 @@ class App:
         self._press_throttled(
             "B", f"{scene} → 按 B 取消购买", f"tap:B({scene})")
 
+    def _handle_research_done(self, scene):
+        """科技树弹出的「载具研发完毕」框：按 **B** 关掉（返回/取消）。
+
+        原文见 logs/unknown_20260930_001920.jsonl 00:58:56 / 01:05:17 ——
+        整帧只有 4 个 token：`研发完毕 | Do217E-2 | 000条4.3 | 购买`。
+        这是某台载具研发完成、问你要不要买的框，所以 **X 在这里不能按**：
+        框上那个「购买」就是花钱，和 `_handle_buy_prompt` 是同一条规矩。
+        用户明确要求按 B，并且明确要求**只给这个框加 B、不动 未知** ——
+        未知是兜底类别，里面混着机库/加载/击杀浮层，B 在那些地方是"退出"。
+
+        **B 到底关不关得掉，是推断的**（和 机组锁定 一样，logs/ 里没有
+        "按了 B 之后这个框消失"的直接证据）。这个仓库一贯 B=取消/X=确认，
+        实机若发现 B 没反应，改下面那个字符串为 "X"。
+
+        进节流阀（共用 30 秒的钟）。改这里的节奏前先读 CLAUDE.md 的
+        X-press throttle valve 一节：那个钟改小会连累大厅。
+
+        `why` 里**故意不写** 研发完毕 四个字连成的整 token：机器人自己的
+        日志行会被 OCR 读回去，而这个场景的关键词正好是整 token 相等的
+        `研发完毕`（自污染那个坑见 tools/scene_check.py 的 AMBIGUOUS）。
+        `label` 只进 JSONL，不出现在屏幕上，所以可以带场景名。
+        """
+        self._press_throttled(
+            "B", "科技树载具研发弹窗 → 按 B 关掉", f"tap:B({scene})")
     def _handle_select_vehicle(self, texts):
         """Vehicle select: auto join"""
         self._reset_sortie_state()
@@ -967,11 +1069,18 @@ class App:
 
         在**不可重生**地图上阵亡后按结果浮层的「加入战斗！」就会弹这个框，
         框里只有一个「确定」。它的意思是阵容里没有一台可出击的载具 ——
-        机器人没法替玩家挑（载具列表里没有"哪台可用"的信号），所以按一次
-        确定把提示关掉，然后过 UI_RETRY_S 再试一次加入。
+        机器人没法替玩家挑（载具列表里没有"哪台可用"的信号），所以把提示
+        关掉，然后过一会儿再试一次加入。
 
         用户明确要求**保持重试而不是停机**：停机等于整局自动化就停在这儿等人。
-        按键走 _press_x_throttled，所以这里每 30 秒最多按一次 ——
+
+        2026-09-29 按用户要求改了两点：重试间隔 30 秒 → **5 秒**
+        （`NEEDS_VEHICLE_RETRY_S`），并且 **X / B 轮流按**，走的也是自己的钟
+        `_needs_vehicle_next`。不跟别的界面共用那个 30 秒的钟，是因为那个钟
+        一改小就会加速「战果浮层的 X → 加入战斗 → 需选载具 → 关掉 → 又回到
+        战果浮层」这个已知循环，也会让大厅重新变成每 5 秒按一次 X。
+        理由写在 NEEDS_VEHICLE_RETRY_S 的注释里。
+
         修复前是每轮扫描一次 X（还补 B/A），实测 logs/scenes_20260928_140707.jsonl
         这个框在屏幕上挂了 2 分钟，被砸了 40 次 X + 3 次 B + 3 次 A。
         """
@@ -982,8 +1091,19 @@ class App:
         if self.running:
             self.log("\u79bb\u5f00\u6218\u6597 \u2192 \u81ea\u52a8\u505c\u6b62")
             self.stop()
-        self._press_x_throttled(
-            "阵容里没有可出击的载具 → 按确定关掉提示，30 秒后重试加入")
+        if not self.gpad:
+            return
+        now = time.time()
+        if now < self._needs_vehicle_next:
+            return
+        self._needs_vehicle_next = now + NEEDS_VEHICLE_RETRY_S
+        # X / B 轮流：X 是框里那个「确定」，B 是想让界面退到更上一层。
+        btn = "X" if self._needs_vehicle_x else "B"
+        self._needs_vehicle_x = not self._needs_vehicle_x
+        self.log(f"阵容里没有可出击的载具 → 按 {btn} 关掉提示，"
+                 f"{NEEDS_VEHICLE_RETRY_S} 秒后重试加入")
+        self.gpad.tap(_PAD_BTN[btn])
+        self._actions.append(f"tap:{btn}(需选载具)")
 
     def _handle_post_battle(self, texts):
         """Post-battle: skip results"""
@@ -1252,6 +1372,38 @@ class App:
             "ry": ry * TRACK_RIGHT_Y_SIGN,
         }
 
+    def _update_smart_throttle(self, texts):
+        """把一帧 OCR 结果喂给智能油门环，**只在状态变化时**打一行日志。
+
+        每轮扫描（默认 3 秒）调一次，与场景无关。这里只更新 self.smart.cmd /
+        self._engine，不动手柄 —— 写摇杆是 _apply_control_output 的事。
+        """
+        info = parse_engine(texts)
+        self._engine = info
+        prev = self.smart.cmd
+        cmd, target = self.smart.observe(time.time(), info["hot"], info["pct"],
+                                         **_smart_tunes())
+        self._engine_target = target
+
+        # 读数在 110/100/None 之间抖动很正常，日志只认「过热标志 + 杆量 + 有没有读数」
+        # 这三件事的变化，否则每 3 秒就是一行，和 CLAUDE.md 里 _log_decision 一个道理。
+        # 读数按 10 个百分点粗分档（110 / 100 / 0）：这样「读数终于掉到 100」这个
+        # 关键瞬间会打一行，而 110↔109 那种抖动不会每轮刷屏。
+        bucket = None if info["pct"] is None else info["pct"] // 10
+        key = (self.smart.hot, round(cmd, 3), bucket)
+        if key == self._engine_key:
+            return
+        self._engine_key = key
+        if not SMART_THROTTLE:
+            return
+        if info["pct"] is None:
+            read = "读不到"
+        else:
+            read = "%d%%%s" % (info["pct"], "加力" if info["wep"] else "")
+        why = ("过热(%s)" % "/".join(info["words"])) if self.smart.hot else "正常"
+        move = "" if abs(cmd - prev) < 1e-9 else "，摇杆 %.2f→%.2f" % (prev, cmd)
+        self.log("智能油门: %s → 目标 %d%%，当前读数 %s%s" % (why, target, read, move))
+
     def _apply_control_output(self, out):
         if not self.gpad:
             return
@@ -1259,6 +1411,13 @@ class App:
         ly = max(-1.0, min(1.0, out["ly"]))
         rx = max(-1.0, min(1.0, out["rx"]))
         ry = max(-1.0, min(1.0, out["ry"]))
+        # 智能油门只接管「这个阶段本来就要求油门全开」的巡航（见 SMART_GOVERN_AT）。
+        # **就地改 out**：_control_loop 是先把 out 存进 _last_control_state、再调
+        # 这里、最后才 _log_control，所以 HUD 和日志看到的都是实际发出去的杆量。
+        if (SMART_THROTTLE and out.get("mode") in ("track", "guide")
+                and ly >= SMART_GOVERN_AT):
+            ly = max(-1.0, min(1.0, self.smart.cmd))
+            out["ly"] = ly
         self.gpad.left_joystick(lx, ly)
         self.gpad.right_joystick(rx, ry)
         self.gpad.update()
