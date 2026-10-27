@@ -81,7 +81,7 @@ main thread → gui.run_gui(app) → QApplication.exec_()
 | `common/gamepad.py` | `Gamepad` class wrapping `vgamepad` — buttons, joysticks, triggers |
 | `common/window.py` | Win32 window search + MSS screen capture |
 | `common/utils.py` | `map_val()` — pixel deviation → joystick value with deadzone/sensitivity |
-| `common/wt8111.py` | Requests to WT's local `:8111` HTTP API — player pos, airfields, bombing zones |
+| `common/wt8111.py` | Requests to WT's local `:8111` HTTP API — player pos, enemy aircraft, airfields, bombing zones |
 | `common/nav_law.py` | `NavLaw` — the post-bomb glideslope coupler as pure numerics (no IO, no deps), so `tools/nav_replay.py` can close the loop around the *shipping* law |
 | `detect/yolo.py` | Ultralytics YOLO wrapper with `_refine_box_center()` for thin bboxes |
 | `common/results.py` | Battle-results OCR parser as pure functions (no IO, no deps), so `tools/results_check.py` can regression-test it against recorded frames — same reason `nav_law.py` exists |
@@ -600,6 +600,15 @@ warning, not an intervention. That is a deliberate split, so don't wire them int
 covered (`atan2(-Δalt, horizontal displacement)`, horizontal distance scaled by `get_map_size()`).
 It is instrumentation, never feedback.
 
+### 投弹后环绕敌机（`orbit_enemy_fighters`）
+
+在 GUI「导航」组开启后，
+`_finish_bomb_cycles()` 停掉轰炸控制循环并启动 `_orbit_enemy_aircraft()`。它用 8111
+地图上红色 `aircraft` 对象选最近的敌机，追逐半径约 1.8 km、角速度约 0.18 rad/s 的移动
+环形航点；航向使用导航段相同的 P/D 参数。搜不到敌机 20 秒或控制异常时回退到
+`fly_to_airfield`（若开）或减速巡航；关闭开关时完全沿用原有收尾流程。若 8111 模块不可用，
+该模式不会启动，按减速巡航收尾。
+
 ### 飞往机场：为什么是闭环下滑道
 
 The post-bomb leg (`App._navigate_to_airfield`) was rewritten from an open-loop timer into a
@@ -771,6 +780,9 @@ All tunables in `config.json` (no code changes needed). Key parameters:
 - `pixel_deviation` / `pixel_deviation_y` — bomb aim deadzone
 - `bomb_view_distance` — when to enter bomb view (meters via 8111)
 - `fly_to_airfield` — optional post-bomb navigation
+- `orbit_enemy_fighters` — post-bomb orbit of the nearest visible enemy plane (GUI「导航」group,
+  default off). Uses 8111 `map_obj.json`; if no enemy is available for 20 s, falls back to
+  `fly_to_airfield` or cruise. Turning it off while orbiting returns to that same fallback.
 - `airfield_arrival_ratio` — arrival radius as a fraction of `map_size` (default 0.016 ≈ 1 km on a
   65536 m map). Below this the leg goes to the level-off flyover branch.
 - `nav_*` — the post-bomb glideslope coupler (see 「飞往机场：为什么是闭环下滑道」). All hot-apply:

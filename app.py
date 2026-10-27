@@ -29,6 +29,7 @@ from common.config import (
     GUIDE_BOX_RATIO,
     BOMB_VIEW_SENSE,
     FLY_TO_AIRFIELD,
+    ORBIT_ENEMY_FIGHTERS,
     AIRFIELD_ARRIVAL_RATIO,
     # 导航到机场段的参数（单位都是物理量：度/秒、杆量每 m/s，见 common/config.py）
     NAV_TURN_RATE_MAX,
@@ -92,7 +93,7 @@ from detect.yolo import YOLO
 from detect.scene import detect_state, get_scene_button, get_keyword_actions, SceneDetector
 
 try:
-    from common.wt8111 import get_player, get_enemy_airfields, get_friendly_airfields, get_target_bearing, get_player_altitude, get_target_bombing_zone, get_map_size, get_bombing_zones, get_teammates, is_teammate_heading_to_zone, get_flight_state
+    from common.wt8111 import get_player, get_enemy_airfields, get_enemy_aircraft, get_friendly_airfields, get_target_bearing, get_player_altitude, get_target_bombing_zone, get_map_size, get_bombing_zones, get_teammates, is_teammate_heading_to_zone, get_flight_state
     WT8111_OK = True
 except ImportError:
     WT8111_OK = False
@@ -2441,7 +2442,7 @@ class App:
             self._finish_bomb_cycles()
 
     def _finish_bomb_cycles(self):
-        """循环轰炸收尾：飞往敌方机场（自毁）或原地减速巡航。
+        """循环轰炸收尾：环绕敌机、飞往敌方机场（自毁）或减速巡航。
 
         原来这段只挂在"最后一轮正常结束"这一条路径上，炸弹提前用尽会直接
         break 出循环、离开战斗会被 running=False 掐掉循环 —— 两种情况下都
@@ -2453,8 +2454,12 @@ class App:
         self._bomb_control_enabled = False
         self.aggression = 0.0
 
+        do_orbit = ORBIT_ENEMY_FIGHTERS and WT8111_OK
+        do_airfield = FLY_TO_AIRFIELD and WT8111_OK
+        self.running = False
+
         if self.gpad:
-            if FLY_TO_AIRFIELD and WT8111_OK:
+            if do_orbit or do_airfield:
                 self.gpad.left_joystick(0, 0.7)
                 self.gpad.right_joystick(0, 0)
             else:
@@ -2462,15 +2467,138 @@ class App:
                 self.gpad.right_joystick(0, 0)
             self.gpad.update()
 
-        if FLY_TO_AIRFIELD and WT8111_OK:
+        if do_orbit:
+            self.log("轰炸轮次结束，尝试环绕最近的敌方战斗机...")
+            threading.Thread(target=self._orbit_enemy_aircraft, daemon=True).start()
+        elif do_airfield:
             self.log("轰炸轮次结束，开始飞往敌方机场（自毁）...")
             threading.Thread(target=self._navigate_to_airfield, daemon=True).start()
         else:
             self.log("轰炸轮次结束，减速巡航")
 
         # 停掉识别/控制循环，避免和 _navigate_to_airfield 抢摇杆输出
-        self.running = False
         self.bombs_depleted = True
+
+    def _orbit_enemy_aircraft(self):
+        """投弹结束后绕 8111 地图上最近的敌机飞行；目标持续丢失时回退到原收尾策略。
+
+        采用移动环形航点：航点以固定半径绕敌机缓慢前进，航向控制复用导航段的
+        航向 P/D 参数。敌机/玩家数据来自 map_obj；没有有效敌机时最多等待 20 秒，
+        然后回退到 fly_to_airfield（若开启）或减速巡航。
+        """
+        if not WT8111_OK or not self.gpad:
+            return
+
+        self._navigating = True
+        self.throttle = 0.8
+        orbit_radius_m = 1800.0
+        orbit_rate = 0.18  # rad/s，约 35 秒一圈
+        target_wait_s = 20.0
+        map_size = get_map_size() or 130000.0
+        phase = None
+        missing_since = None
+        last_heading = None
+        last_step = None
+        omega_f = 0.0
+        last_log = 0.0
+        lost_target = False
+
+        self.log(f"环绕敌机：目标半径 {orbit_radius_m:.0f}m，持续搜索敌机")
+        try:
+            while self._navigating:
+                if not ORBIT_ENEMY_FIGHTERS:
+                    self.log("环绕开关已关闭，结束环绕并回退到原收尾设置")
+                    lost_target = True
+                    break
+                if self.game_state not in ("战斗中", "未知"):
+                    self.log("离开战斗，停止环绕")
+                    break
+                if not self.master_on or not self.gpad.enabled:
+                    self.log("主开关关闭，停止环绕")
+                    break
+
+                player = get_player()
+                enemies = get_enemy_aircraft()
+                now = time.time()
+                if not player:
+                    if missing_since is None:
+                        missing_since = now
+                    if now - missing_since >= target_wait_s:
+                        lost_target = True
+                        self.log(f"{target_wait_s:.0f}s 未获取到玩家/敌机位置，回退到原收尾设置")
+                        break
+                    time.sleep(0.5)
+                    continue
+
+                if enemies:
+                    enemy = min(enemies, key=lambda e:
+                                (e["x"] - player["x"]) ** 2 + (e["y"] - player["y"]) ** 2)
+                    missing_since = None
+                    enemy_id = enemy.get("icon") or None
+                    if phase is None or (enemy_id is not None and phase.get("id") != enemy_id):
+                        radial, _ = get_target_bearing(enemy["x"], enemy["y"], player["x"], player["y"])
+                        phase = {"id": enemy_id, "angle": math.radians(radial), "t": now}
+                        last_heading = None
+                        omega_f = 0.0
+                else:
+                    if missing_since is None:
+                        missing_since = now
+                    if now - missing_since >= target_wait_s:
+                        lost_target = True
+                        self.log(f"{target_wait_s:.0f}s 未发现敌机，回退到原收尾设置")
+                        break
+                    time.sleep(0.5)
+                    continue
+
+                # 保持按时间推进的环绕相位；敌机位置每轮刷新，追逐移动中的圆环航点。
+                elapsed = now - phase["t"]
+                angle = phase["angle"] + orbit_rate * elapsed
+                radius = orbit_radius_m / max(map_size, 1.0)
+                wx = max(0.0, min(1.0, enemy["x"] + radius * math.sin(angle)))
+                wy = max(0.0, min(1.0, enemy["y"] - radius * math.cos(angle)))
+                bearing, _ = get_target_bearing(player["x"], player["y"], wx, wy)
+                error = (bearing - player["heading"] + 540) % 360 - 180
+                dt = max(0.1, now - last_step) if last_step is not None else 0.1
+                heading_rate = 0.0
+                if last_heading is not None:
+                    heading_rate = ((player["heading"] - last_heading + 540) % 360 - 180) / dt
+                    omega_f = omega_f * 0.7 + heading_rate * 0.3
+                last_step = now
+                last_heading = player["heading"]
+
+                e_p = math.copysign(max(0.0, abs(error) - NAV_YAW_DZ), error)
+                omega_cmd = NAV_YAW_KP * e_p - NAV_YAW_KD * omega_f
+                rx = max(-NAV_YAW_MAX, min(NAV_YAW_MAX,
+                                           omega_cmd / max(NAV_TURN_RATE_MAX, 1e-3)))
+                if abs(error) > NAV_YAW_DZ and abs(rx) < MIN_V * 0.35:
+                    rx = math.copysign(MIN_V * 0.35, rx if rx else error)
+
+                if self.gpad:
+                    self.gpad.left_joystick(rx * NAV_AILERON_GAIN if NAV_AILERON_GAIN else 0.0,
+                                            self.throttle)
+                    self.gpad.right_joystick(rx, 0.0)
+                    self.gpad.update()
+
+                if now - last_log >= 2.0:
+                    last_log = now
+                    _, dist = get_target_bearing(player["x"], player["y"], enemy["x"], enemy["y"])
+                    self.log(f"环绕敌机 {dist * map_size / 1000:.1f}km | 航点偏差 {error:+.0f}° | 转向 {rx:+.2f}")
+                time.sleep(0.2)
+        except Exception as e:
+            self.log(f"环绕敌机异常: {e}")
+            lost_target = True
+        finally:
+            self._navigating = False
+
+        if lost_target and self.master_on and self.gpad and self.gpad.enabled:
+            if FLY_TO_AIRFIELD and WT8111_OK:
+                self.log("环绕不可用，改为飞往敌方机场（自毁）")
+                threading.Thread(target=self._navigate_to_airfield, daemon=True).start()
+            else:
+                self.log("环绕不可用，减速巡航")
+                self.gpad.left_joystick(0, -0.5)
+                self.gpad.right_joystick(0, 0)
+                self.gpad.update()
 
     # ==================== 导航到机场 ====================
 

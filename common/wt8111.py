@@ -418,6 +418,40 @@ def get_teammates():
     return teammates
 
 
+def get_enemy_aircraft():
+    """获取地图 API 可见的敌方飞机位置。
+
+    8111 的空战地图用红色标记敌机；过滤玩家图标和友方颜色，返回
+    [{x, y, dx, dy, heading, icon}, ...]。坐标为 map_obj 的归一化坐标。
+    """
+    map_obj = fetch_json("/map_obj.json")
+    if not isinstance(map_obj, list):
+        return []
+
+    enemies = []
+    for obj in map_obj:
+        if obj.get("type") != "aircraft":
+            continue
+        icon = obj.get("icon", "") or ""
+        if "Player" in icon:
+            continue
+        color = (obj.get("color") or "").strip().lstrip("#")
+        try:
+            red, green, blue = (int(color[i:i + 2], 16) for i in (0, 2, 4))
+        except (TypeError, ValueError):
+            continue
+        if red < 150 or red < green * 2 or red < blue * 2:
+            continue
+        x, y = obj.get("x"), obj.get("y")
+        if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+            continue
+        dx, dy = obj.get("dx", 0), obj.get("dy", 0)
+        heading = math.degrees(math.atan2(dx, -dy)) % 360
+        enemies.append({"x": x, "y": y, "dx": dx, "dy": dy,
+                        "heading": heading, "icon": icon})
+    return enemies
+
+
 def get_throttle():
     """获取当前油门百分比（0~100），多引擎取平均值，失败返回 None"""
     state = fetch_json("/state")

@@ -128,8 +128,12 @@ FIELDS = [
          rng=(0.05, 0.95, 0.05), glob="IOU_DEFAULT", special="yolo_iou", group="模型"),
 
     # ---- 导航 ----
+    dict(key="orbit_enemy_fighters", label="投弹后环绕敌机", kind="bool",
+         glob="ORBIT_ENEMY_FIGHTERS", group="导航",
+         note="投弹轮次结束后环绕最近的 8111 可见敌机；找不到敌机时回退到下方的机场自毁/巡航设置"),
     dict(key="fly_to_airfield", label="投弹后飞往机场", kind="bool",
-         glob="FLY_TO_AIRFIELD", group="导航"),
+         glob="FLY_TO_AIRFIELD", group="导航",
+         note="环绕敌机开关关闭时的收尾方式；若环绕开启，则作为敌机不可用时的回退"),
     dict(key="airfield_arrival_ratio", label="机场抵达判定", kind="float",
          rng=(0.001, 0.1, 0.001), glob="AIRFIELD_ARRIVAL_RATIO", group="导航"),
     dict(key="nav_pitch_kv", label="导航 下降率增益", kind="float",

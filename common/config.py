@@ -18,6 +18,7 @@ _DEFAULTS = {
     "model_iou": 0.45,
     "bomb_view_distance": 6500,
     "fly_to_airfield": False,
+    "orbit_enemy_fighters": False,
     "nav_turn_rate_max": 12.0,
     "nav_yaw_kp": 0.25,
     "nav_yaw_kd": 0.35,
@@ -113,6 +114,7 @@ BOMB_VIEW_SENSE = _cfg["bomb_view_sense"]
 CONF_DEFAULT           = _cfg["model_conf"]
 IOU_DEFAULT            = _cfg["model_iou"]
 FLY_TO_AIRFIELD        = _cfg.get("fly_to_airfield", False)
+ORBIT_ENEMY_FIGHTERS   = _cfg.get("orbit_enemy_fighters", False)
 # ---- 飞往敌方机场（投弹后的自毁航段，见 app._navigate_to_airfield）----
 # 这个航段原来实测跑在 0.25Hz 上（日志行间隔恒定 4.0 秒），根因不是游戏慢，是
 # BASE_URL 写成了 localhost：Windows 先试 IPv6 ::1，而游戏只听 IPv4，::1 既不回
