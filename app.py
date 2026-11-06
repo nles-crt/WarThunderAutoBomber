@@ -1136,7 +1136,9 @@ class App:
         # 重开一次「需选载具」弹窗，所以必须走节流。退出中 走的是同一个分支。
         btn = SCENE_HANDLER_KEYS["post_battle"]
         if btn in _PAD_BTN:
-            self._press_throttled(btn, f"战果汇总 → 按 {btn} 离开结算画面")
+            self._press_throttled(
+                btn, f"战果汇总 → 按 {btn} 离开结算画面",
+                f"tap:{btn}(战果汇总)")
 
     def _handle_loading(self):
         """Loading: no-op"""
