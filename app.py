@@ -74,6 +74,9 @@ from common.config import (
     BATTLE_LOG,
     UNKNOWN_LOG,
     MATCH_WAIT_WARN,
+    SCENE_BUTTON_BINDINGS,
+    KEYWORD_BUTTON_BINDINGS,
+    SCENE_HANDLER_KEYS,
     # 智能油门（过热降到 100、否则加力；逻辑全在 common/engine.py）
     SMART_THROTTLE,
     SMART_HOT_PCT,
@@ -149,6 +152,7 @@ _PAD_BTN = {
     "A": vg.XUSB_BUTTON.XUSB_GAMEPAD_A,
     "B": vg.XUSB_BUTTON.XUSB_GAMEPAD_B,
     "X": vg.XUSB_BUTTON.XUSB_GAMEPAD_X,
+    "Y": vg.XUSB_BUTTON.XUSB_GAMEPAD_Y,
 }
 
 
@@ -617,7 +621,7 @@ class App:
                                           "选择新的研发项", "购买改装件确认",
                                           "研发完毕")):
                 btn_map = _PAD_BTN
-                btn = get_scene_button(new_scene)
+                btn = get_scene_button(new_scene, SCENE_BUTTON_BINDINGS)
                 pressed = False
                 # 大厅的"取消"弹窗判断搬进了 _handle_lobby —— 大厅已经不在
                 # SCENE_BUTTONS 里，`btn` 对它恒为 None，这个分支不会命中。
@@ -626,7 +630,7 @@ class App:
                     actions.append(f"tap:{btn}")
                     pressed = (btn == "X")
                 # 关键词触发：如果场景键已经按了 X，就不再重复按 X
-                for kw, kw_btn in get_keyword_actions(texts):
+                for kw, kw_btn in get_keyword_actions(texts, KEYWORD_BUTTON_BINDINGS):
                     if kw_btn not in btn_map or (pressed and kw_btn == "X"):
                         continue
                     # X 一律走全局节流阀。机库自己的"参战"按钮文字就是 `加入战斗`
@@ -936,12 +940,16 @@ class App:
             self._lobby_since = now     # 只用于下面那行"已停留 Ns"的日志
         # 挡路的弹窗（有"取消"）先用 B 关掉。**只在"这次确实要按 X"时才关**，
         # 否则它自己会变成每轮一次的 B 循环 —— B 是取消/退出，按多了就是死循环。
-        if self.gpad and "取消" in texts and now >= self._retry_next:
-            self.gpad.tap(vg.XUSB_BUTTON.XUSB_GAMEPAD_B, 0.3)
-            self._actions.append("tap:B")
+        cancel_key = SCENE_HANDLER_KEYS["lobby_cancel"]
+        if self.gpad and cancel_key in _PAD_BTN and "取消" in texts and now >= self._retry_next:
+            self.gpad.tap(_PAD_BTN[cancel_key], 0.3)
+            self._actions.append(f"tap:{cancel_key}")
             time.sleep(0.5)
-        self._press_x_throttled(
-            f"大厅已停留 {now - self._lobby_since:.0f}s → 尝试加入战斗")
+        join_key = SCENE_HANDLER_KEYS["lobby_join"]
+        if join_key in _PAD_BTN:
+            self._press_throttled(join_key,
+                f"大厅已停留 {now - self._lobby_since:.0f}s → 尝试加入战斗",
+                f"tap:{join_key}(大厅)")
 
     def _handle_matchmaking(self, texts):
         """排队等匹配：一个键都不按，只记录等了多久。
@@ -986,8 +994,10 @@ class App:
             self.stop()
 
         if self.gpad:
-            self.log("机组锁定界面 → 按 B 取消，等待飞机解锁（不选飞机）")
-            self.gpad.tap(vg.XUSB_BUTTON.XUSB_GAMEPAD_B, 0.3)
+            btn = SCENE_HANDLER_KEYS["crew_lock"]
+            if btn in _PAD_BTN:
+                self.log(f"机组锁定界面 → 按 {btn} 取消，等待飞机解锁（不选飞机）")
+                self.gpad.tap(_PAD_BTN[btn], 0.3)
 
     def _handle_mods_screen(self, scene):
         """「选择新的研发项」改装件界面：按 **X** 退出。
@@ -1008,8 +1018,9 @@ class App:
         再按一遍（修复前就是这么 X 和 B 一起按的，
         见 logs/scenes_20260928_131739.jsonl 13:17:53）。
         """
-        self._press_throttled(
-            "X", f"{scene} → 按 X 退出", f"tap:X({scene})")
+        btn = SCENE_HANDLER_KEYS["mods_screen"]
+        if btn in _PAD_BTN:
+            self._press_throttled(btn, f"{scene} → 按 {btn} 退出", f"tap:{btn}({scene})")
 
     def _handle_buy_prompt(self, scene):
         """「还有改装件未购入。要立刻购买吗？」弹窗：按 **B** 取消。
@@ -1022,8 +1033,9 @@ class App:
         节流阀的理由同上。另外不拿 `是` / `否` 当关键词：样本帧里 `否` 被 OCR
         读成了 `香`，那两个按钮认不出来。
         """
-        self._press_throttled(
-            "B", f"{scene} → 按 B 取消购买", f"tap:B({scene})")
+        btn = SCENE_HANDLER_KEYS["buy_prompt"]
+        if btn in _PAD_BTN:
+            self._press_throttled(btn, f"{scene} → 按 {btn} 取消购买", f"tap:{btn}({scene})")
 
     def _handle_research_done(self, scene):
         """科技树弹出的「载具研发完毕」框：按 **B** 关掉（返回/取消）。
@@ -1047,8 +1059,9 @@ class App:
         `研发完毕`（自污染那个坑见 tools/scene_check.py 的 AMBIGUOUS）。
         `label` 只进 JSONL，不出现在屏幕上，所以可以带场景名。
         """
-        self._press_throttled(
-            "B", "科技树载具研发弹窗 → 按 B 关掉", f"tap:B({scene})")
+        btn = SCENE_HANDLER_KEYS["research_done"]
+        if btn in _PAD_BTN:
+            self._press_throttled(btn, f"科技树载具研发弹窗 → 按 {btn} 关掉", f"tap:{btn}({scene})")
     def _handle_select_vehicle(self, texts):
         """Vehicle select: auto join"""
         self._reset_sortie_state()
@@ -1061,9 +1074,10 @@ class App:
         # 这个 X **故意不走节流阀**：出击界面上它就是"加入战斗！"，按下去才会
         # 排队，一次没成当然要立刻再按。补记进 _actions —— 事故里 idx79 显示
         # actions=[] 却确实按了 X，就是这里漏记，害得排查时只能反推。
-        if self.gpad and not any("\u53d6\u6d88" in t for t in texts):
-            self.gpad.tap(vg.XUSB_BUTTON.XUSB_GAMEPAD_X)
-            self._actions.append("tap:X(选择载具)")
+        btn = SCENE_HANDLER_KEYS["select_vehicle"]
+        if self.gpad and btn in _PAD_BTN and not any("\u53d6\u6d88" in t for t in texts):
+            self.gpad.tap(_PAD_BTN[btn])
+            self._actions.append(f"tap:{btn}(选择载具)")
 
     def _handle_needs_vehicle(self, texts):
         """「开始任务前必须先点选一台可供出击的载具。」弹窗。
@@ -1099,8 +1113,11 @@ class App:
             return
         self._needs_vehicle_next = now + NEEDS_VEHICLE_RETRY_S
         # X / B 轮流：X 是框里那个「确定」，B 是想让界面退到更上一层。
-        btn = "X" if self._needs_vehicle_x else "B"
+        btn = SCENE_HANDLER_KEYS["needs_vehicle_first" if self._needs_vehicle_x
+                                  else "needs_vehicle_second"]
         self._needs_vehicle_x = not self._needs_vehicle_x
+        if btn not in _PAD_BTN:
+            return
         self.log(f"阵容里没有可出击的载具 → 按 {btn} 关掉提示，"
                  f"{NEEDS_VEHICLE_RETRY_S} 秒后重试加入")
         self.gpad.tap(_PAD_BTN[btn])
@@ -1117,7 +1134,9 @@ class App:
         # 结算/结果界面的 X 改由这里节流按（"战果汇总"已从 SCENE_BUTTONS 摘掉）。
         # 在阵亡后的结果浮层上 X 可能是「加入战斗！」——每 3 秒按一次就会每 3 秒
         # 重开一次「需选载具」弹窗，所以必须走节流。退出中 走的是同一个分支。
-        self._press_x_throttled("战果汇总 → 按 X 离开结算画面")
+        btn = SCENE_HANDLER_KEYS["post_battle"]
+        if btn in _PAD_BTN:
+            self._press_throttled(btn, f"战果汇总 → 按 {btn} 离开结算画面")
 
     def _handle_loading(self):
         """Loading: no-op"""

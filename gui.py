@@ -200,7 +200,36 @@ FIELDS = [
          glob="HOTKEY_MASTER", group="HUD", note="重启生效"),
 ]
 
-GROUP_ORDER = ["投弹", "追踪", "油门", "信号翻转", "模型", "导航", "场景", "HUD"]
+# 场景触发键可以在此调整，采用相同的配置存储和热应用流程。
+_BUTTON_CHOICES = [("不按", ""), ("A", "A"), ("B", "B"),
+                   ("X", "X"), ("Y", "Y")]
+_SCENE_BUTTON_FIELDS = [
+    ("scene_key_no_spawn", "无重生基地", "scene", "无重生基地"),
+    ("scene_key_spectate", "观战模式", "scene", "观战模式"),
+    ("scene_key_airfield_supply", "机场补给", "scene", "机场补给"),
+    ("scene_key_return_base", "关键词：返回基地", "keyword", "返回基地"),
+    ("scene_key_requirements", "关键词：请选择符合要求", "keyword", "请选择符合要求"),
+    ("scene_key_supplies_accepted", "关键词：已验收作战物资", "keyword", "已验收作战物资"),
+    ("scene_key_reloading", "关键词：正在装填", "keyword", "正在装填"),
+    ("scene_key_new_decal", "关键词：新贴花可用", "keyword", "新贴花可用"),
+    ("scene_key_join_battle", "关键词：加入战斗", "keyword", "加入战斗"),
+    ("scene_key_mods_finished", "关键词：均研发完毕", "keyword", "均研发完毕"),
+    ("scene_key_lobby_join", "大厅：加入战斗", "handler", "lobby_join"),
+    ("scene_key_lobby_cancel", "大厅：关闭取消弹窗", "handler", "lobby_cancel"),
+    ("scene_key_crew_lock", "机组锁定", "handler", "crew_lock"),
+    ("scene_key_mods_screen", "选择新的研发项", "handler", "mods_screen"),
+    ("scene_key_buy_prompt", "购买改装件确认", "handler", "buy_prompt"),
+    ("scene_key_research_done", "研发完毕弹窗", "handler", "research_done"),
+    ("scene_key_select_vehicle", "选择载具", "handler", "select_vehicle"),
+    ("scene_key_needs_vehicle_first", "需选载具：第一个键", "handler", "needs_vehicle_first"),
+    ("scene_key_needs_vehicle_second", "需选载具：第二个键", "handler", "needs_vehicle_second"),
+    ("scene_key_post_battle", "战果汇总", "handler", "post_battle"),
+]
+for _key, _label, _kind, _map_key in _SCENE_BUTTON_FIELDS:
+    FIELDS.append(dict(key=_key, label=_label, kind="choice", rng=_BUTTON_CHOICES,
+                       binding=(_kind, _map_key), group="场景按键"))
+
+GROUP_ORDER = ["投弹", "追踪", "油门", "信号翻转", "模型", "导航", "场景", "场景按键", "HUD"]
 
 
 # ==================== config.json 读写 ====================
@@ -265,6 +294,16 @@ def apply_value(app_inst, hud, spec, value):
         app_mod = sys.modules.get("app")
         if app_mod is not None:
             setattr(app_mod, g, value)
+
+    binding = spec.get("binding")
+    if binding:
+        app_mod = sys.modules.get("app")
+        if app_mod is not None:
+            kind, name = binding
+            mapping = {"scene": "SCENE_BUTTON_BINDINGS",
+                       "keyword": "KEYWORD_BUTTON_BINDINGS",
+                       "handler": "SCENE_HANDLER_KEYS"}[kind]
+            getattr(app_mod, mapping)[name] = value
 
     a = spec.get("inst")
     if a and app_inst is not None:

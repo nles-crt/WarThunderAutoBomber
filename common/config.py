@@ -83,6 +83,27 @@ _DEFAULTS = {
     "battle_log": True,
     "unknown_log": True,
     "match_wait_warn": 300,
+    # OCR 场景触发按键。空字符串表示关闭该触发；只提供安全的 A/B/X/Y 选项。
+    "scene_key_no_spawn": "X",
+    "scene_key_spectate": "X",
+    "scene_key_airfield_supply": "A",
+    "scene_key_return_base": "X",
+    "scene_key_requirements": "B",
+    "scene_key_supplies_accepted": "A",
+    "scene_key_reloading": "A",
+    "scene_key_new_decal": "A",
+    "scene_key_join_battle": "X",
+    "scene_key_mods_finished": "B",
+    "scene_key_lobby_join": "X",
+    "scene_key_lobby_cancel": "B",
+    "scene_key_crew_lock": "B",
+    "scene_key_mods_screen": "X",
+    "scene_key_buy_prompt": "B",
+    "scene_key_research_done": "B",
+    "scene_key_select_vehicle": "X",
+    "scene_key_needs_vehicle_first": "X",
+    "scene_key_needs_vehicle_second": "B",
+    "scene_key_post_battle": "X",
     # ---- 智能油门（见 common/engine.py）----
     "smart_throttle": True,
     "smart_throttle_hot_pct": 100,
@@ -183,6 +204,34 @@ BATTLE_LOG       = _cfg.get("battle_log", True)
 UNKNOWN_LOG      = _cfg.get("unknown_log", True)
 # 排队等匹配超过这么多秒打一条警告日志。只记录，不按键（按键会取消匹配）。
 MATCH_WAIT_WARN  = _cfg.get("match_wait_warn", 300)
+
+# 场景触发按键（热应用由 GUI 修改 app 模块里的映射）。None/空值用于关闭。
+SCENE_BUTTON_BINDINGS = {
+    "无重生基地": _cfg.get("scene_key_no_spawn", "X"),
+    "观战模式": _cfg.get("scene_key_spectate", "X"),
+    "机场补给": _cfg.get("scene_key_airfield_supply", "A"),
+}
+KEYWORD_BUTTON_BINDINGS = {
+    "返回基地": _cfg.get("scene_key_return_base", "X"),
+    "请选择符合要求": _cfg.get("scene_key_requirements", "B"),
+    "已验收作战物资": _cfg.get("scene_key_supplies_accepted", "A"),
+    "正在装填": _cfg.get("scene_key_reloading", "A"),
+    "新贴花可用": _cfg.get("scene_key_new_decal", "A"),
+    "加入战斗": _cfg.get("scene_key_join_battle", "X"),
+    "均研发完毕": _cfg.get("scene_key_mods_finished", "B"),
+}
+SCENE_HANDLER_KEYS = {
+    "lobby_join": _cfg.get("scene_key_lobby_join", "X"),
+    "lobby_cancel": _cfg.get("scene_key_lobby_cancel", "B"),
+    "crew_lock": _cfg.get("scene_key_crew_lock", "B"),
+    "mods_screen": _cfg.get("scene_key_mods_screen", "X"),
+    "buy_prompt": _cfg.get("scene_key_buy_prompt", "B"),
+    "research_done": _cfg.get("scene_key_research_done", "B"),
+    "select_vehicle": _cfg.get("scene_key_select_vehicle", "X"),
+    "needs_vehicle_first": _cfg.get("scene_key_needs_vehicle_first", "X"),
+    "needs_vehicle_second": _cfg.get("scene_key_needs_vehicle_second", "B"),
+    "post_battle": _cfg.get("scene_key_post_battle", "X"),
+}
 
 # ---- 智能油门（过热降到 100，否则加力；逻辑全在 common/engine.py）----
 # 触发信号直接取游戏自己打在 HUD 上的 `油温过高` / `水温过高`，复用已有的每 3 秒

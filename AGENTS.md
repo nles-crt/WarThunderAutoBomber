@@ -380,6 +380,23 @@ Two more rules live in the same block of `_state_monitor_loop`:
 
 ### Scene log (`logs/scenes_*.jsonl`)
 
+### Configurable scene buttons
+
+Scene-triggered button bindings are stored in `config.json` as `scene_key_*` values and
+shown in the GUI's **场景按键** group. Each binding accepts A/B/X/Y or an empty string to
+disable that press. `common/config.py` builds three live maps: `SCENE_BUTTON_BINDINGS` for
+scene entries, `KEYWORD_BUTTON_BINDINGS` for OCR keyword triggers, and `SCENE_HANDLER_KEYS`
+for handlers that own their own cadence. `gui.apply_value()` updates the corresponding map
+in `app.py` immediately, while the existing config save path persists the scalar setting.
+
+Changing a binding only changes the button. Keep the handler's timing and scene safety rules:
+X-style retries still share `UI_RETRY_S`, needs-vehicle keys still alternate on their own
+clock, and crew-lock still presses once per visit. Matchmaking and unknown-scene actions are
+intentionally not configurable here because arbitrary input there can cancel a queue, exit a
+battle, or confirm an unknown dialog.
+
+### Scene log (`logs/scenes_*.jsonl`)
+
 One JSON object per scan, written by `_scene_log_write`, gated by `scene_log` / `scene_log_texts`.
 The useful columns are `actions` (what was actually pressed this round — `tap:X`, and scene
 buttons via `tap:{btn}({kw})`) and `gated_out`; `raw` vs `scene` distinguishes "classified wrong" from "classified right, still

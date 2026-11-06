@@ -183,15 +183,15 @@ KEYWORD_BUTTONS = {
 # 工具函数
 # ============================================================
 
-def get_scene_button(scene):
-    return SCENE_BUTTONS.get(scene)
+def get_scene_button(scene, bindings=None):
+    return (bindings if bindings is not None else SCENE_BUTTONS).get(scene)
 
 
-def get_keyword_actions(texts):
+def get_keyword_actions(texts, bindings=None):
     if not texts:
         return []
     result = []
-    for kw, btn in KEYWORD_BUTTONS.items():
+    for kw, btn in (bindings if bindings is not None else KEYWORD_BUTTONS).items():
         if any(kw in t for t in texts):
             result.append((kw, btn))
     return result
