@@ -98,14 +98,17 @@ class Gamepad:
 
     def tap(self, button, duration: float = 0.1):
         """按下 → 等待 → 松开"""
-        if not self.enabled: return
+        if not self.enabled: return False
         name = self._btn_name(button)
         print(f"[手柄] 点按 {name} ({duration:.1f}s)")
         self.press(button)
         self.update()
         time.sleep(duration)
+        if not self.enabled:
+            return False
         self.release(button)
         self.update()
+        return True
 
     def press_lb_x(self):
         """LB+X 组合键（批量投弹触发），同时按下"""

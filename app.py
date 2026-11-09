@@ -842,14 +842,17 @@ class App:
         抽这一层是为了让"按键 + 打日志 + 记 actions"只有一份实现 ——
         各写一套必然会漏一处，这是这个仓库已经踩过的坑。
         """
-        if not self.gpad:
+        if not self.gpad or not self.gpad.enabled:
             return False
         now = time.time()
         if now < getattr(self, clock_attr):
             return False
-        setattr(self, clock_attr, now + interval)
+        # Longer menu pulses are less likely to be missed by the game's input polling.
+        # Do not consume the retry interval when F11 has disabled gamepad output.
+        if not self.gpad.tap(_PAD_BTN[btn], 0.3):
+            return False
+        setattr(self, clock_attr, time.time() + interval)
         self.log(why)
-        self.gpad.tap(_PAD_BTN[btn])
         self._actions.append(label)
         return True
 
@@ -1086,9 +1089,9 @@ class App:
         # 排队，一次没成当然要立刻再按。补记进 _actions —— 事故里 idx79 显示
         # actions=[] 却确实按了 X，就是这里漏记，害得排查时只能反推。
         btn = SCENE_HANDLER_KEYS["select_vehicle"]
-        if self.gpad and btn in _PAD_BTN and not any("\u53d6\u6d88" in t for t in texts):
-            self.gpad.tap(_PAD_BTN[btn])
-            self._actions.append(f"tap:{btn}(选择载具)")
+        if self.gpad and self.gpad.enabled and btn in _PAD_BTN and not any("\u53d6\u6d88" in t for t in texts):
+            if self.gpad.tap(_PAD_BTN[btn], 0.3):
+                self._actions.append(f"tap:{btn}(选择载具)")
 
     def _handle_needs_vehicle(self, texts):
         """「开始任务前必须先点选一台可供出击的载具。」弹窗。
@@ -1117,22 +1120,22 @@ class App:
         if self.running:
             self.log("\u79bb\u5f00\u6218\u6597 \u2192 \u81ea\u52a8\u505c\u6b62")
             self.stop()
-        if not self.gpad:
+        if not self.gpad or not self.gpad.enabled:
             return
         now = time.time()
         if now < self._needs_vehicle_next:
             return
-        self._needs_vehicle_next = now + NEEDS_VEHICLE_RETRY_S
         # X / B 轮流：X 是框里那个「确定」，B 是想让界面退到更上一层。
         btn = SCENE_HANDLER_KEYS["needs_vehicle_first" if self._needs_vehicle_x
                                   else "needs_vehicle_second"]
-        self._needs_vehicle_x = not self._needs_vehicle_x
         if btn not in _PAD_BTN:
             return
-        self.log(f"阵容里没有可出击的载具 → 按 {btn} 关掉提示，"
-                 f"{NEEDS_VEHICLE_RETRY_S} 秒后重试加入")
-        self.gpad.tap(_PAD_BTN[btn])
-        self._actions.append(f"tap:{btn}(需选载具)")
+        if self.gpad.tap(_PAD_BTN[btn], 0.3):
+            self._needs_vehicle_next = time.time() + NEEDS_VEHICLE_RETRY_S
+            self._needs_vehicle_x = not self._needs_vehicle_x
+            self.log(f"阵容里没有可出击的载具 → 按 {btn} 关掉提示，"
+                     f"{NEEDS_VEHICLE_RETRY_S} 秒后重试加入")
+            self._actions.append(f"tap:{btn}(需选载具)")
 
     def _handle_post_battle(self, texts):
         """Post-battle: skip results"""
