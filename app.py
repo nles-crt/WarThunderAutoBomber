@@ -96,7 +96,7 @@ from detect.yolo import YOLO
 from detect.scene import detect_state, get_scene_button, get_keyword_actions, SceneDetector
 
 try:
-    from common.wt8111 import get_player, get_enemy_airfields, get_enemy_aircraft, get_friendly_airfields, get_target_bearing, get_player_altitude, get_target_bombing_zone, get_map_size, get_bombing_zones, get_teammates, is_teammate_heading_to_zone, get_flight_state
+    from common.wt8111 import get_health, get_player, get_enemy_airfields, get_enemy_aircraft, get_friendly_airfields, get_target_bearing, get_player_altitude, get_target_bombing_zone, get_map_size, get_bombing_zones, get_teammates, is_teammate_heading_to_zone, get_flight_state
     WT8111_OK = True
 except ImportError:
     WT8111_OK = False
@@ -154,6 +154,17 @@ _PAD_BTN = {
     "X": vg.XUSB_BUTTON.XUSB_GAMEPAD_X,
     "Y": vg.XUSB_BUTTON.XUSB_GAMEPAD_Y,
 }
+
+
+def _8111_guide_stick(bearing_diff):
+    """Smooth, low-gain 8111 steering used when YOLO has no usable target."""
+    deadband = 3.0
+    error = float(bearing_diff)
+    if abs(error) <= deadband:
+        return 0.0
+    lo = min(max(0.0, MIN_V), 0.55)
+    magnitude = lo + min((abs(error) - deadband) / (90.0 - deadband), 1.0) * (0.55 - lo)
+    return math.copysign(magnitude, error)
 
 
 def _nav_tunes():
@@ -1489,8 +1500,8 @@ class App:
                 if self.guide_mode and WT8111_OK and not self.aim_lock:
                     try:
                         info = get_target_bombing_zone()
-                        if info and abs(info["bearing_diff"]) > 15:
-                            stick_x = map_val(info["bearing_diff"], 90, 1.0, MIN_V, 0.55)
+                        if info and abs(info["bearing_diff"]) > 3:
+                            stick_x = _8111_guide_stick(info["bearing_diff"])
                             out = {
                                 "mode": "guide",
                                 "lx": stick_x,
@@ -1515,8 +1526,8 @@ class App:
                 if self.guide_mode and WT8111_OK and not self.aim_lock:
                     try:
                         info = get_target_bombing_zone()
-                        if info and abs(info["bearing_diff"]) > 15:
-                            stick_x = map_val(info["bearing_diff"], 90, 1.0, MIN_V, 0.55)
+                        if info and abs(info["bearing_diff"]) > 3:
+                            stick_x = _8111_guide_stick(info["bearing_diff"])
                             out = {
                                 "mode": "guide",
                                 "lx": stick_x,

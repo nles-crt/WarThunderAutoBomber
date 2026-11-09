@@ -107,6 +107,8 @@ Four values are shadowed by App instance attributes and must be written to the i
 `config.json` is read/written as **raw JSON** (`_`-prefixed documentation keys preserved verbatim);
 `common/config.py` reads it once at import and exposes no write path.
 
+`detect/yolo.py` runs at 640 by default. If that pass has no boxes, it retries at 960 at most once every 0.5 seconds to recover small targets after the game widens the third-person view. In `app.py`'s guide mode, the 8111 bearing fallback continues steering down to a 3° deadband with a smooth low-gain map; do not restore the old `abs(bearing_diff) > 15` cutoff, which caused heading to stall near 15° whenever YOLO had no usable box.
+
 ### Master Switch (F12)
 All gamepad output funnels through the single `Gamepad` class in `common/gamepad.py`, so the
 emergency stop is one gate there rather than dozens of call sites in `app.py`:

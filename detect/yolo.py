@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import cv2
+import time
 
 
 def _clamp(v, lo, hi):
@@ -77,6 +78,7 @@ class YOLO:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.conf = 0.5
         self.iou = 0.45
+        self._last_large_infer = 0.0
 
     def load(self, path):
         from ultralytics import YOLO as Y
@@ -89,6 +91,14 @@ class YOLO:
         if self.model is None:
             return [], frame
         r = self.model(frame, device=self.device, conf=self.conf, iou=self.iou, imgsz=640, verbose=False)
+        # A widened third-person view can make distant bombing zones too small at 640.
+        # Retry at higher resolution only occasionally when the normal pass found nothing,
+        # so ordinary frames keep the original inference cost and cadence.
+        now = time.monotonic()
+        if (not r or len(r[0].boxes) == 0) and now - self._last_large_infer >= 0.5:
+            self._last_large_infer = now
+            r = self.model(frame, device=self.device, conf=self.conf, iou=self.iou,
+                           imgsz=960, verbose=False)
         if not r:
             return [], frame
         r = r[0]
